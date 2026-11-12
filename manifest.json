@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "RouteWise \u2014 Travel Scenario Planner",
+  "version": "0.2.1",
+  "description": "AI-assisted trip interpretation and source-linked itinerary comparison. No automatic fare scraping.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8787/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Open RouteWise"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  }
+}

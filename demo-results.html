@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>RouteWise DOM Extraction Sandbox</title>
+  <style>
+    body{font:15px system-ui,sans-serif;color:#192638;background:#f7f9fc;max-width:750px;margin:40px auto;padding:0 18px}
+    .card{padding:18px;background:#fff;border:1px solid #d6deec;border-radius:12px;margin:12px 0}
+    .fare{display:flex;justify-content:space-between;align-items:center;gap:8px}.price{font-size:24px;font-weight:800}.muted{color:#617086;font-size:13px}
+    button{background:#2257d7;color:#fff;border:0;padding:10px 16px;border-radius:8px;cursor:pointer}pre{padding:18px;border-radius:12px;background:#172131;color:#d9e7fa;white-space:pre-wrap;font-size:13px}
+  </style>
+</head>
+<body>
+  <h1>DOM extraction sandbox</h1>
+  <p>This page is owned by the RouteWise prototype. Its prices are <strong>fictional test data</strong>, not bookable fares. The extractor reads visible HTML cards and converts them to structured data.</p>
+  <section data-flight-result class="card" data-from="BCN" data-to="TFN" data-date="2027-02-02">
+    <div class="fare"><strong data-field="carrier">Sample Airline Alpha</strong><span class="price" data-field="price">€82.50</span></div>
+    <p class="muted"><span data-field="depart">08:20</span> – <span data-field="arrive">10:40</span> · Overhead cabin bag: <span data-field="bag">€29.00</span></p>
+  </section>
+  <section data-flight-result class="card" data-from="BCN" data-to="TFN" data-date="2027-02-02">
+    <div class="fare"><strong data-field="carrier">Sample Airline Beta</strong><span class="price" data-field="price">€95.00</span></div>
+    <p class="muted"><span data-field="depart">15:10</span> – <span data-field="arrive">17:35</span> · Overhead cabin bag: <span data-field="bag">Included</span></p>
+  </section>
+  <section data-flight-result class="card" data-from="MAD" data-to="SPC" data-date="2027-02-04">
+    <div class="fare"><strong data-field="carrier">Sample Airline Gamma</strong><span class="price" data-field="price">€119.99</span></div>
+    <p class="muted"><span data-field="depart">12:30</span> – <span data-field="arrive">14:35</span> · Overhead cabin bag: <span data-field="bag">€18.00</span></p>
+  </section>
+  <button id="extract">Read the DOM into JSON</button>
+  <h2>Extracted result</h2><pre id="output">Click the button to see extraction results.</pre>
+  <script type="module" src="demo-results.mjs"></script>
+</body>
+</html>
