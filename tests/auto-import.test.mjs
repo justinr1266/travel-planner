@@ -1,0 +1,21 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+import {googleFlightsSearchUrl} from '../search-links.mjs';
+const source = readFileSync(new URL('../flights-overlay.js',import.meta.url),'utf8');
+const sandbox = {module:{exports:{}},URL};
+vm.runInNewContext(source,sandbox);
+const {sameOpenedSearch} = sandbox.module.exports;
+const expected = googleFlightsSearchUrl({mode:'flight',from:'BCN',to:'SPC',date:'2027-01-11'});
+test('only the exact opened one-way search URL is eligible for auto import',()=>{
+  assert.equal(sameOpenedSearch(expected,expected),true);
+  assert.equal(sameOpenedSearch(expected + '&hl=en',expected),true);
+  const wrongCurrency = new URL(expected);
+  wrongCurrency.searchParams.set('curr','USD');
+  assert.equal(sameOpenedSearch(wrongCurrency.href,expected),false);
+  const wrongTask = googleFlightsSearchUrl({mode:'flight',from:'SPC',to:'MAD',date:'2027-01-18'});
+  assert.equal(sameOpenedSearch(wrongTask,expected),false);
+  assert.equal(sameOpenedSearch('https://evil.example/travel/flights/search?tfs=x&curr=EUR',expected),false);
+  assert.equal(sameOpenedSearch('garbage',expected),false);
+});

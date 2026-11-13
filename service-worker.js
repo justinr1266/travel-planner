@@ -10,8 +10,17 @@ chrome.runtime.onInstalled.addListener(() => {
     title:'Send selected flight details to RouteWise',
     contexts:['selection']
   });
+  chrome.contextMenus.create({
+    id:'routewise-developer-console',
+    title:'Open RouteWise Developer Console',
+    contexts:['action']
+  });
 });
 chrome.contextMenus.onClicked.addListener((info) => {
+  if(info.menuItemId==='routewise-developer-console') {
+    chrome.tabs.create({url:chrome.runtime.getURL('developer.html')});
+    return;
+  }
   if(info.menuItemId!=='routewise-selected-flight'||!info.selectionText?.trim())return;
   let sourceUrl='';
   try {

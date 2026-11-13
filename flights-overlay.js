@@ -6,6 +6,7 @@
   const MAX_CARDS = 60;
   const MAX_CAPTURE = 245000;
   const CAPTURE_MESSAGE = 'routewise:show-flight-overlay';
+  const AUTO_CAPTURE_MESSAGE = 'routewise:auto-import-flight-search';
 
   function escapeAttribute(value) {
     return String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -157,9 +158,25 @@
     };
   }
 
+  // A matching source URL is necessary before using unlabelled search prices.
+  // No page content, cookies, or query strings are sent to an external service.
+  function sameOpenedSearch(actualUrl, expectedUrl) {
+    try {
+      const actual = new URL(actualUrl);
+      const expected = new URL(expectedUrl);
+      const tfs = expected.searchParams.get('tfs');
+      return actual.origin === 'https://www.google.com' &&
+        expected.origin === 'https://www.google.com' &&
+        actual.pathname === '/travel/flights/search' &&
+        actual.pathname === expected.pathname &&
+        Boolean(tfs) && actual.searchParams.get('tfs') === tfs &&
+        actual.searchParams.get('curr') === 'EUR' &&
+        expected.searchParams.get('curr') === 'EUR';
+    } catch { return false; }
+  }
   // Test the exact DOM-adapter code in Node without downloading Google Flights.
   if (typeof module !== 'undefined' && module?.exports) {
-    Object.assign(module.exports,{cardRecord,collectCards,capturePayload,escapeAttribute});
+    Object.assign(module.exports,{cardRecord,collectCards,capturePayload,escapeAttribute,sameOpenedSearch});
   }
   if (typeof document === 'undefined' || typeof chrome === 'undefined' ||
     !/^\/travel\/flights(?:\/|$)/.test(location.pathname)) return;
@@ -276,8 +293,45 @@
     window.addEventListener('scroll',queuePositionMarkers,true);
     window.addEventListener('resize',queuePositionMarkers);
   }
+  // User-initiated only. Wait for Google's client-rendered cards to stop changing;
+  // preserve the manual import overlay when this times out or markup changes.
+  let autoCaptureInFlight = null;
+  async function autoImportLoadedCards(expectedUrl) {
+    if (!sameOpenedSearch(location.href, expectedUrl)) {
+      return {ok:false,retry:true,error:'Google Flights has not opened the expected one-way search yet.'};
+    }
+    const deadline = Date.now() + 30000;
+    let lastSignature = '';
+    let stablePasses = 0;
+    while (Date.now() < deadline) {
+      if (!sameOpenedSearch(location.href, expectedUrl)) {
+        return {ok:false,error:'Search URL changed. Use the manual overlay to review results.'};
+      }
+      const found = collectCards(document);
+      const signature = found.map(record => record.snapshot).join('\n');
+      const hasPricedFlight = found.some(record => Number.isFinite(record.price));
+      stablePasses = hasPricedFlight && signature === lastSignature ? stablePasses + 1 : 0;
+      if (stablePasses >= 3) {
+        const payload = capturePayload(found, location.href);
+        await chrome.storage.local.set({pendingFlightCapture: payload});
+        return {ok:true,count:payload.captureCount};
+      }
+      lastSignature = signature;
+      await new Promise(resolve => setTimeout(resolve, 800));
+    }
+    return {ok:false,error:'No stable priced flight cards appeared within 30 seconds. Use the manual overlay.'};
+  }
   chrome.runtime.onMessage.addListener((message,_,sendResponse)=>{
-    if (message?.type!==CAPTURE_MESSAGE)return;
+    if (message?.type === AUTO_CAPTURE_MESSAGE) {
+      if (!autoCaptureInFlight) {
+        autoCaptureInFlight = autoImportLoadedCards(message.expectedUrl)
+          .finally(() => {autoCaptureInFlight = null;});
+      }
+      autoCaptureInFlight.then(sendResponse,error =>
+        sendResponse({ok:false,error:String(error?.message || error)}));
+      return true;
+    }
+    if (message?.type !== CAPTURE_MESSAGE) return;
     mount();toggle(true);sendResponse({ok:true,count:cards.length});
   });
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',mount,{once:true});

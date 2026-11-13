@@ -1,6 +1,6 @@
 import { AIRPORTS, airportName, rankRoutes, normalizedOffer } from './core.mjs';
 import { generatePlannedRoutes } from './route-engine.mjs';
-import { DEMO_PLAN, validateTripPlan, normalizeTripWithDiagnostics } from './trip-parser.mjs';
+import { validateTripPlan, normalizeTripWithDiagnostics } from './trip-parser.mjs';
 import { applyPlanToForm } from './plan-ui.mjs';
 import { updateAirportSelect } from './airport-select.mjs';
 import { protectReviewedTrip } from './trip-consistency.mjs';
@@ -56,14 +56,27 @@ let destinationCandidates = [];
 let destinationCandidateKey = '';
 let connectionCandidates = {outbound:[],inbound:[]};
 let connectionCandidateKey = '';
+let sessionCleared = false; // Suppress automatic route generation after a traveler reset.
+let lastAiInterpretation = null; // Reuse the last successful same-day, identical prompt response.
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 }
-function status(message) { $('status').textContent = message; }
+let developerEventQueue = Promise.resolve();
+function status(message) {
+  $('status').textContent = message;
+  if (!message) return;
+  developerEventQueue = developerEventQueue.then(async () => {
+    const { developerEvents = [] } = await chrome.storage.local.get('developerEvents');
+    const entries = Array.isArray(developerEvents) ? developerEvents : [];
+    await chrome.storage.local.set({ developerEvents: [...entries.slice(-49), {
+      time: new Date().toISOString(), message: String(message).slice(0, 900)
+    }] });
+  }).catch(() => { /* Logging must never interrupt trip planning. */ });
+}
 function generationStatus(message) { $('generationStatus').textContent = message; status(message); }
 function localDate() { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
-function visibleRoutes() { return [...routes, ...manualRoutes.filter(route=>manualRouteForTrip(route,trip))]; }
+function visibleRoutes() { return sessionCleared ? [] : [...routes, ...manualRoutes.filter(route=>manualRouteForTrip(route,trip))]; }
 function candidateKey(t) {return JSON.stringify([t.origin,t.destination,t.requestedRegion,t.startDate,t.endDate,t.request]);}
 function hubKey(t,maxConnections) {return JSON.stringify([t.origin,t.preferred,t.destination,t.startDate,t.endDate,t.request,maxConnections]);}
 function placeName(code) { return visibleRoutes().find(r=>r.places?.[code])?.places?.[code] || airportName(code); }
@@ -72,7 +85,13 @@ function dateDisplay(value) { return new Date(`${value}T00:00:00Z`).toLocaleDate
 function fillSelect(id, selected) {
   // Do not recreate thousands of airport <option>s every time AI details are
   // applied. The initial list is cached on the select element and reused.
-  updateAirportSelect($(id), AIRPORTS, selected, { allowEmpty: id === 'preferred' });
+  updateAirportSelect($(id), AIRPORTS, selected, { allowEmpty: id === 'preferred' || !selected });
+  // After Start fresh, the origin and end selectors must not silently retain
+  // airports from the old trip. Do not rebuild the airport list.
+  if (!selected && !Array.from($(id).options).some(option => option.value === '')) {
+    $(id).add(new Option('Choose an airport', ''), 0);
+  }
+  if (!selected) $(id).value = '';
 }
 function setForm() {
   for (const key of ['origin','preferred','destination']) fillSelect(key,trip[key]);
@@ -90,7 +109,7 @@ function getFormTrip() {
   for (const key of Object.keys(DEFAULT_TRIP)) result[key] = $(key).value;
   return result;
 }
-async function persist() { await chrome.storage.local.set({trip,bag,offers,roundTripTickets,flightTimes,groundTimes,flightResearch,broadCache,routes,manualRoutes,destinationCandidates,destinationCandidateKey,connectionCandidates,connectionCandidateKey,parsedPlan,parseWarnings,parseSource,parsedRequest,parseDebug}); }
+async function persist() { await chrome.storage.local.set({trip,bag,offers,roundTripTickets,flightTimes,groundTimes,flightResearch,broadCache,routes,manualRoutes,destinationCandidates,destinationCandidateKey,connectionCandidates,connectionCandidateKey,parsedPlan,parseWarnings,parseSource,parsedRequest,parseDebug,sessionCleared,lastAiInterpretation}); }
 function formatWindow(from, to, fixed) {
   if (!from && !to) return 'Not specified';
   if (from && to && from === to) return `${from}${fixed?' (fixed)':''}`;
@@ -107,7 +126,7 @@ function showPlanPreview() {
   const fields = [
     ['Origin',showAirport(p.origin)],
     ['Primary destination',p.destination_search === 'open' ? 'Open to destination suggestions' : showAirport(p.preferred)],
-    ['Destination discovery',p.destination_search === 'open' ? 'Explore destinations with Groq' : p.destination_search === 'region' ? 'Suggest cities inside requested region (Groq, unverified)' : 'Named city'],
+    ['Destination discovery',p.destination_search === 'open' ? 'Explore destination ideas' : p.destination_search === 'region' ? 'Suggest cities in requested region (review required)' : 'Named city'],
     ['Requested regions',p.requested_regions.length ? p.requested_regions.join(', ') : 'None specified'],
     ['Destination',showAirport(p.destination)],
     ['Departure window',formatWindow(p.depart_earliest,p.depart_latest,p.fixed_departure)],
@@ -125,21 +144,11 @@ function showPlanPreview() {
     ...p.questions.map(q=>`Question: ${q}`)
   ];
   const more = [...p.hard_constraints.map(x=>`Required: ${x}`),...p.soft_preferences.map(x=>`Preferred: ${x}`)];
-  const debugView = parseDebug ? `<details class="parse-debug"><summary>Developer diagnostics — raw Groq vs normalized data</summary>
-    <p class="helper">Only locally saved trip data is shown. Never share exported diagnostics containing private travel details.</p>
-    <strong>Model: ${escapeHtml(parseDebug.model || 'Unknown')} · Reference date: ${escapeHtml(parseDebug.referenceDate || 'Unknown')}</strong>
-    <p class="helper">Date evidence: ${escapeHtml((parseDebug.dateEvidence || []).join('; ') || 'No deterministic date phrases found')}</p>
-    ${parseDebug.timingMs ? `<p class="helper">Server timing: Groq ${parseDebug.timingMs.groqRequest} ms · Local parsing ${parseDebug.timingMs.normalization} ms · Total ${parseDebug.timingMs.totalServer} ms</p>` : ''}
-    <strong>Fields corrected after AI:</strong><pre>${escapeHtml(JSON.stringify(parseDebug.corrections || [],null,2))}</pre>
-    ${parseDebug.clientCorrections?.length ? `<strong>Side-panel safety corrections:</strong><pre>${escapeHtml(JSON.stringify(parseDebug.clientCorrections,null,2))}</pre>` : ''}
-    <strong>Raw Groq object:</strong><pre>${escapeHtml(JSON.stringify(parseDebug.rawModel || {},null,2))}</pre>
-    <strong>Normalized result:</strong><pre>${escapeHtml(JSON.stringify(p,null,2))}</pre></details>` : '';
   target.innerHTML = `<h3>Review extracted trip details</h3>
     <p class="parse-source">${parseSource === 'sample' ? 'SAMPLE OUTPUT — not AI-generated' : 'AI interpretation — verify before using'}</p>
     <div class="data-grid">${fieldHtml}</div>
     ${more.length?`<ul>${more.map(x=>`<li>${escapeHtml(x)}</li>`).join('')}</ul>`:''}
     ${notices.length?`<div class="parse-warnings"><strong>Review:</strong><ul>${notices.map(x=>`<li>${escapeHtml(x)}</li>`).join('')}</ul></div>`:''}
-    ${debugView}
     <button id="applyParsed" class="primary full">Apply known details to trip form</button>`;
   $('applyParsed').addEventListener('click', async()=>{
     if (parsedRequest !== $('request').value.trim()) {
@@ -173,22 +182,27 @@ async function setParsedPlan(raw,source,sourceText=$('request').value.trim(),deb
   showPlanPreview();
   await persist();
 }
-$('sampleParse').addEventListener('click', async()=>{
-  await setParsedPlan(DEMO_PLAN,'sample');
-  status('Sample extraction preview shown. This did not call an AI or modify your trip fields.');
-});
 $('interpret').addEventListener('click', async()=>{
   const description = $('request').value.trim();
   if (!description) { status('Describe your trip first.'); return; }
-  const startedAt=performance.now();
   $('interpret').disabled = true;
   $('interpret').textContent = 'Interpreting…';
-  status('Sending trip text to local server for AI interpretation…');
+  status('Interpreting your trip…');
   try {
+    const referenceDate=localDate();
+    if (lastAiInterpretation?.request===description &&
+        lastAiInterpretation.referenceDate===referenceDate && lastAiInterpretation.plan) {
+      await setParsedPlan(lastAiInterpretation.plan,'ai',description,lastAiInterpretation.debug||null);
+      parseWarnings=lastAiInterpretation.warnings||[];
+      showPlanPreview();
+      await persist();
+      status('Restored your earlier AI interpretation from this device (no Groq request).');
+      return;
+    }
     const response = await fetch('http://127.0.0.1:8787/parse-trip', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ request:description, referenceDate:localDate() }),
+      body: JSON.stringify({ request:description, referenceDate }),
       signal: AbortSignal.timeout(35000)
     });
     let data;
@@ -202,12 +216,14 @@ $('interpret').addEventListener('click', async()=>{
       showPlanPreview();
       await persist();
     }
-    status(`AI interpretation ready in ${((performance.now()-startedAt)/1000).toFixed(1)}s. Review it and click Apply known details.`);
+    lastAiInterpretation={request:description,referenceDate,plan:data.plan,debug:data.debug||null,warnings:[...parseWarnings]};
+    await persist();
+    status('Your trip is ready to review. Check the details and click Apply known details.');
   } catch(error) {
-    status(`AI unavailable: ${error.message}. Start the local server with npm run server, or try Preview sample.`);
+    status(`AI unavailable: ${error.message}. Check that the RouteWise service is running and try again.`);
   } finally {
     $('interpret').disabled = false;
-    $('interpret').textContent = 'Interpret trip with AI';
+    $('interpret').textContent = 'Interpret my trip';
   }
 });
 // The review form is authoritative for edited endpoints and dates. Reuse the AI's
@@ -377,28 +393,66 @@ function renderBroadResearch(){
     ${r.selected.some(s=>s.cacheAge==='stale')?'<div class="helper">Some flight quotes are older than 24 hours; refresh before deciding.</div>':''}
     ${preview?`<div class="helper">${escapeHtml(preview)}</div>`:''}</div>`;
   }).join('')||'<p class="helper">No route comparisons yet.</p>';
-  $('broadSummary').textContent=pending.length ? `Research ${pending.length} remaining one-way search(es) for a complete first-pass cost comparison.`:
+  $('broadSummary').textContent=!tasks.length ? 'Generate candidate routes to compare flight prices.' : pending.length ?
+    `Research ${pending.length} remaining one-way search(es) for a complete first-pass cost comparison.`:
     `All ${tasks.length} unique flight searches have cached results. Search quotes are preliminary; confirm finalist tickets and baggage.`;
 }
 
+// Open the task once, then ask its already-installed Google Flights content
+// script for visible flight cards. The onChanged listener performs validation
+// and caches estimates; it never writes verified fares.
+let broadImportBusy = false;
+async function openAndImportResearch(task) {
+  if (broadImportBusy) return;
+  broadImportBusy = true;
+  activeResearchKey = task.key;
+  renderBroadResearch();
+  const expectedUrl = googleFlightsSearchUrl(task.leg);
+  let tab;
+  try {
+    tab = await chrome.tabs.create({url: expectedUrl});
+    if (!tab?.id) throw new Error('Chrome did not return a tab ID.');
+    status(`Opened ${task.leg.from} to ${task.leg.to} on ${task.leg.date}. Waiting for Google Flights cards...`);
+    // Message attempts begin before document_idle; retry until the content
+    // script is installed or the search needs manual review.
+    for (let attempt = 0; attempt < 40; attempt++) {
+      try {
+        const reply = await chrome.tabs.sendMessage(tab.id, {
+          type:'routewise:auto-import-flight-search', expectedUrl
+        });
+        if (reply?.ok) return; // Storage event reports validated cache status.
+        if (!reply?.retry) {
+          status(`Automatic import unavailable: ${reply?.error || 'No results returned'}. Use the Google Flights overlay to import manually.`);
+          return;
+        }
+      } catch (error) {
+        if (/No tab with id/i.test(error?.message || '')) {
+          status('Google Flights tab was closed before the import finished.');
+          return;
+        }
+        // This is expected while the new page is loading its content script.
+      }
+      await new Promise(resolve => setTimeout(resolve, 800));
+    }
+    status('Google Flights did not become available. On its tab, use the RouteWise import overlay manually.');
+  } catch (error) {
+    status(`Could not open/import flight search: ${error.message}`);
+  } finally {
+    broadImportBusy = false;
+  }
+}
 $('broadSearches').addEventListener('click', async event=>{
   const open=event.target.closest('button[data-broad-open]');
   const clear=event.target.closest('button[data-broad-remove]');
   if(clear){delete broadCache[clear.dataset.broadRemove];await persist();render();return;}
   if(!open)return;
   const task=broadTasks().find(item=>item.key===open.dataset.broadOpen);
-  if(!task)return;
-  activeResearchKey=task.key;
-  chrome.tabs.create({url:googleFlightsSearchUrl(task.leg)});
-  renderBroadResearch();
-  status(`Opened one-way ${task.leg.from} → ${task.leg.to} on ${task.leg.date}. Import all visible Best results using the RouteWise overlay, then use the broad-research capture action.`);
+  if(task) await openAndImportResearch(task);
 });
-$('broadOpenNext').addEventListener('click',()=>{
+$('broadOpenNext').addEventListener('click',async()=>{
   const task=broadTasks().find(item=>!broadCache[item.key]);
   if(!task){status('All unique flight searches have cached results. Open an individual search to refresh it.');return;}
-  activeResearchKey=task.key;chrome.tabs.create({url:googleFlightsSearchUrl(task.leg)});
-  renderBroadResearch();
-  status(`Opened ${task.leg.from} → ${task.leg.to} ${task.leg.date}. Import all visible Best results in the overlay.`);
+  await openAndImportResearch(task);
 });
 $('broadCaptureSave').addEventListener('click',async()=>{
   const task=broadTasks().find(item=>item.key===$('broadCaptureTask').value);
@@ -572,13 +626,39 @@ $('generate').addEventListener('click', async () => {
       else if(!data.hasNetwork)groundNotice=' No GTFS feeds loaded. Optional: npm run sync:transit (see README).';
       else groundNotice=' The imported GTFS feeds did not show a relevant intercity connection.';
     }catch(error){groundNotice=` Ground-network lookup unavailable: ${error.message}. Flight candidates preserved.`;}
-    trip=next;routes=nextRoutes;
+    trip=next;routes=nextRoutes;sessionCleared=false;
     $('editor').hidden=true;currentKey=null;
     await persist();render();
     const withConnections=routes.filter(route=>route.legs.length>2).length;
     generationStatus(`${guarded.notices.join(' ')} Generated ${routes.length} candidate routes${withConnections?` (${withConnections} with connections)`:''}.${hubWarning}${groundNotice}`.trim());
   } catch(error) {generationStatus(`Could not generate routes: ${error.message}`);}
   finally {$('generate').disabled=false;}
+});
+$('resetPlan').addEventListener('click', async()=>{
+  if ($('interpret').disabled || $('generate').disabled || broadImportBusy) {
+    status('Finish the current search or interpretation before starting fresh.');
+    return;
+  }
+  if (!confirm('Clear the displayed trip, selections, route results, and unfinished edits? Your trip description, saved baggage, saved fares, and cached research will be kept.')) return;
+  const description=$('request').value; // Include edits not yet saved to storage.
+  trip={...DEFAULT_TRIP,origin:'',preferred:'',destination:'',requestedRegion:'',
+    startDate:'',endDate:'',request:description};
+  routes=[]; sessionCleared=true;
+  parsedPlan=null;parseWarnings=[];parseSource='';parsedRequest=''; // Keep diagnostics in developer console.
+  activeResearchKey=null;currentKey=null;importLegKey=null;ticketEditorPair=null;
+  ticketEditorRaw='';ticketEditorQuoteOptions=[];lastSavedTicketKeys=[];lastSavedFareKey=null;
+  manualDraftRows=[];manualDraftId=null;pendingFlightCapture=null;
+  $('manualEditor').hidden=true; $('flightImport').hidden=true;
+  $('ticketEditor').hidden=true; $('editor').hidden=true;
+  $('priceSaveNotice').hidden=true; $('priceSaveNotice').textContent='';
+  $('generationStatus').textContent='';
+  $('broadConfirmOneWay').checked=false;
+  $('broadCaptureArea').hidden=true;
+  setForm();showPlanPreview();showCaptureNotice();render();
+  await persist();
+  await chrome.storage.local.remove('pendingFlightCapture');
+  $('tripSetup').open=true;
+  status('Started a fresh planning view. Your trip description, saved fares, and research caches are still available.');
 });
 $('connectionBuffer').addEventListener('change', async()=>{
   trip.connectionBuffer=$('connectionBuffer').value;
@@ -1010,24 +1090,30 @@ $('flightImportForm').addEventListener('submit',async(event)=>{
     status(`Could not save research: ${error.message}`);
   }
 });
+async function autoCacheBroadCapture(capture) {
+  if (!capture?.text) return false;
+  const task = broadTasks().find(item => captureFromOpenedOneWaySearch(capture,item));
+  if (!task) return false;
+  if (broadCache[task.key]?.capturedAt === capture.capturedAt) return true;
+  try {
+    const record = captureBroadSearch(capture,task);
+    broadCache[task.key] = record;
+    await persist();
+    render();
+    status(`Auto-cached ${record.options.length} indicative one-way results for ${task.leg.from} to ${task.leg.to}. Preliminary comparison updated; verified fares unchanged.`);
+    return true;
+  } catch (error) {
+    status(`Broad import needs review: ${error.message}`);
+    return false;
+  }
+}
 chrome.storage.onChanged.addListener((changes,area)=>{
   if(area!=='local'||!changes.pendingFlightCapture)return;
   pendingFlightCapture=changes.pendingFlightCapture.newValue||null;
   showCaptureNotice();
   $('broadConfirmOneWay').checked=false;
   renderBroadResearch();
-  // Fast path: a capture from the exact one-way search RouteWise opened can be
-  // safely cached immediately, without another confirmation click. Unknown
-  // page contexts still require manual review of the price scope.
-  const task=broadTasks().find(item=>item.key===activeResearchKey);
-  if(task && pendingFlightCapture?.text && captureFromOpenedOneWaySearch(pendingFlightCapture,task)){
-    try{
-      const record=captureBroadSearch(pendingFlightCapture,task);
-      broadCache[task.key]=record;
-      persist().then(()=>{render();status(`Auto-cached ${record.options.length} Best-tab one-way results for ${task.leg.from} → ${task.leg.to}. The preliminary comparison is updated.`);})
-        .catch(error=>status(`Could not save broad results: ${error.message}`));
-    }catch(error){status(`Broad import needs review: ${error.message}`);}
-  }
+  void autoCacheBroadCapture(pendingFlightCapture);
   if(importLegKey && pendingFlightCapture?.text)usePendingCapture();
   if(ticketEditorPair && pendingFlightCapture?.text){
     updateTicketQuotesFromCapture(pendingFlightCapture.text,pendingFlightCapture.sourceUrl||'',{autoPrefillSingle:true});
@@ -1130,9 +1216,6 @@ $('clearOffers').addEventListener('click', async () => {
   if (!confirm('Delete every saved one-way fare and linked round-trip ticket? This cannot be undone.')) return;
   offers = {}; roundTripTickets={};lastSavedTicketKeys=[]; await persist(); render(); status('Saved one-way fares and round-trip tickets cleared.');
 });
-$('domDemo').addEventListener('click', () => {
-  chrome.tabs.create({url:chrome.runtime.getURL('demo-results.html')});
-});
 $('export').addEventListener('click', () => {
   const blob = new Blob([JSON.stringify({version:'0.4.9',trip,bag,offers,roundTripTickets,flightTimes,groundTimes,flightResearch,broadCache,routes,manualRoutes,parsedPlan,parseWarnings,parseSource,parsedRequest,parseDebug},null,2)],{type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -1143,7 +1226,7 @@ $('export').addEventListener('click', () => {
 });
 async function init() {
   try {
-    const saved = await chrome.storage.local.get(['trip','bag','offers','roundTripTickets','flightTimes','groundTimes','flightResearch','pendingFlightCapture','routes','manualRoutes','destinationCandidates','destinationCandidateKey','connectionCandidates','connectionCandidateKey','parsedPlan','parseWarnings','parseSource','parsedRequest','parseDebug']);
+    const saved = await chrome.storage.local.get(['trip','bag','offers','roundTripTickets','flightTimes','groundTimes','flightResearch','pendingFlightCapture','routes','manualRoutes','destinationCandidates','destinationCandidateKey','connectionCandidates','connectionCandidateKey','parsedPlan','parseWarnings','parseSource','parsedRequest','parseDebug','sessionCleared','lastAiInterpretation']);
     // Upgrade from v0.2.1: restore an explicitly named country from saved request text.
     const previous = saved.trip || {};
     const oldRegion = /\bportugal\b/i.test(previous.request || '') ? 'Portugal' :
@@ -1166,6 +1249,12 @@ async function init() {
     parseSource = saved.parseSource || '';
     parseDebug = saved.parseDebug || null;
     parsedRequest = saved.parsedRequest || '';
+    sessionCleared = saved.sessionCleared === true;
+    lastAiInterpretation = saved.lastAiInterpretation || (
+      saved.parseSource==='ai' && saved.parsedPlan && saved.parsedRequest && saved.parseDebug?.referenceDate
+        ? {request:saved.parsedRequest,referenceDate:saved.parseDebug.referenceDate,
+           plan:saved.parsedPlan,debug:saved.parseDebug,warnings:saved.parseWarnings||[]} : null
+    );
     destinationCandidates = saved.destinationCandidates || [];
     destinationCandidateKey = saved.destinationCandidateKey || '';
     connectionCandidates = saved.connectionCandidates && typeof saved.connectionCandidates === 'object' ? saved.connectionCandidates : {outbound:[],inbound:[]};
@@ -1182,13 +1271,14 @@ async function init() {
     showPlanPreview();
     // A previously saved country may require Groq. Don't fail extension startup.
     routes = Array.isArray(saved.routes) ? saved.routes : [];
-    if (!routes.length) {
+    if (!routes.length && !sessionCleared) {
       try { routes=generatePlannedRoutes(generationPlan(trip),{destinationCandidates}); }
       catch { routes=[]; }
     }
     render();
     showCaptureNotice();
     status('Ready. Your data stays in this Chrome extension’s local storage.');
+    if(pendingFlightCapture) void autoCacheBroadCapture(pendingFlightCapture);
   } catch (error) { status(`Startup error: ${error.message}`); }
 }
 init();

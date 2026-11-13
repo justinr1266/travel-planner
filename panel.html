@@ -9,34 +9,39 @@
 <body>
   <header class="topbar">
     <div class="wordmark"><span class="brand-mark">↗</span><span>RouteWise</span></div>
-    <span class="version">MVP 0.4.8.1</span>
   </header>
   <main>
     <section class="hero">
-      <p class="eyebrow">TRAVEL SCENARIO WORKSPACE</p>
+      <p class="eyebrow">PLAN YOUR JOURNEY</p>
       <h1>Plan the whole journey.</h1>
-      <p>Describe a trip in your own words, review extracted constraints, and compare route scenarios using verified fares.</p>
-      <p class="notice">Prototype: routes are candidate patterns, not verified services. All fares must be entered from real sources.</p>
+      <p>Describe where you want to go, compare your route options, and research real flight prices.</p>
+      <p class="notice">Suggested routes are not confirmed schedules. Always check travel dates, connections and total prices before booking.</p>
     </section>
 
-    <details class="card" open>
+    <nav class="step-nav" aria-label="Trip planning steps">
+      <a href="#tripSetup">1 · Trip</a>
+      <a href="#bagProfile">2 · Bag</a>
+      <a href="#routeResults">3 · Routes</a>
+      <a href="#broadResearch">4 · Flights</a>
+    </nav>
+
+    <details class="card" id="tripSetup" open>
       <summary><span>01 · Trip setup</span><span class="muted">Edit constraints</span></summary>
       <div class="card-content">
-        <label for="request">Your travel idea <small>(AI interpretation available with local server)</small></label>
+        <label for="request">Your travel idea</label>
         <textarea id="request" rows="5" placeholder="Start in Barcelona, visit La Palma, end in Madrid by Feb 10 2027; leave Feb 2–4; one overhead carry-on...">Barcelona to the Canary Islands, preferably La Palma, ending in Madrid. Leave Barcelona February 2–4, 2027, and arrive in Madrid by February 10, 2027. One overhead cabin bag.</textarea>
-        <div class="two-col action-row">
-          <button class="primary" id="interpret">Interpret trip with AI</button>
-          <button class="secondary" id="sampleParse">Preview sample (no AI)</button>
-        </div>
-        <p class="helper">AI runs through a local server on your computer. No key is stored inside Chrome. Review extracted details before applying them.</p>
+        <button id="resetPlan" type="button" class="ghost">Start fresh · keep my trip description</button>
+        <p class="helper">Clears this planning view, not your saved baggage, fares, or search cache.</p>
+        <button class="primary full" id="interpret">Interpret my trip</button>
+        <p class="helper">Review the suggested trip details before applying them to your plan.</p>
         <section id="parsedResult" class="parse-preview" hidden aria-live="polite"></section>
         <div class="two-col">
           <div><label for="origin">Start</label><select id="origin"></select></div>
           <div><label for="destination">End</label><select id="destination"></select></div>
         </div>
         <label for="destinationSearch">Destination selection</label>
-        <select id="destinationSearch"><option value="specified">Specific destination</option><option value="region">Suggest cities inside a region (Groq)</option><option value="open">Explore destinations (Groq)</option></select>
-        <p class="helper">Groq suggests destinations; RouteWise validates airport names and codes against its local directory.</p>
+        <select id="destinationSearch"><option value="specified">Specific destination</option><option value="region">Suggest cities inside a region</option><option value="open">Explore destination ideas</option></select>
+        <p class="helper">Review suggested destinations before building your routes.</p>
         <label for="requestedRegion">Requested region (optional)</label>
         <input id="requestedRegion" placeholder="Country or region (optional)" />
         <label for="preferred">Primary vacation destination (optional)</label><select id="preferred"></select>
@@ -65,11 +70,11 @@
         </select>
         <button class="primary full" id="generate">Generate candidate routes</button>
         <p id="generationStatus" class="helper" role="status" aria-live="polite"></p>
-        <p class="helper">Optional GTFS train, bus, and ferry data improves route suggestions. Ground-to-flight routes show the connection buffer even when the timetable is missing; you can enter ground and flight times to test it.</p>
+        <p class="helper">Where schedules are available, RouteWise helps check train, bus and ferry connections. You can add travel times to check a connection yourself.</p>
       </div>
     </details>
 
-    <details class="card">
+    <details class="card" id="bagProfile">
       <summary><span>02 · My baggage</span><span class="muted">Saved profile</span></summary>
       <div class="card-content">
         <label for="bagName">Bag label</label><input id="bagName" value="Overhead backpack" />
@@ -84,21 +89,24 @@
       </div>
     </details>
 
-    <section class="results-head">
+    <section class="results-head" id="routeResults">
       <div>
-        <p class="eyebrow">03 · SCENARIO COMPARISON</p>
+        <p class="eyebrow">03 · COMPARE YOUR ROUTES</p>
         <h2>Candidate itineraries</h2>
       </div>
       <span id="routeCount" class="count">0</span>
     </section>
-    <p class="helper">Saved fares determine priced rankings. Use <strong>Make multimodal copy</strong> to edit a route; GTFS and flight connection checks are shown where times are known.</p>
+    <p class="helper">Compare routes, check connection times, or customize an itinerary. Only fares you have verified count as confirmed prices.</p>
     <p id="bufferSummary" class="buffer-summary" role="status"></p>
     <p id="priceSaveNotice" class="capture-notice" hidden role="status" aria-live="polite"></p>
+    <p id="pendingCaptureNotice" class="capture-notice" hidden>Flight results received. Click Import flight on the matching leg.</p>
+    <div id="routes" class="routes"></div>
+
     <section class="card broad-research" id="broadResearch">
-      <div class="broad-title"><h3>04 · Broad flight research</h3><span class="tag">Indicative</span></div>
-      <p class="helper">Open each UNIQUE one-way search on Google Flights' Best tab, click Import all visible flights in the page overlay, then RouteWise automatically caches those results when the page URL still matches the opened search. Otherwise confirm the one-way context below. Top five unique results per search; no API credits. Trains are estimated at €20 per leg. Verified saved fares stay separate.</p>
+      <div class="broad-title"><h3>04 · Compare flight prices</h3><span class="tag">Estimates</span></div>
+      <p class="helper">Open each flight search and RouteWise will try to import the displayed results automatically. These are estimated prices, not confirmed offers. Check flight details, baggage and seller prices before booking. Train estimates use &euro;20 per leg.</p>
       <p id="broadStats" class="helper"></p>
-      <button id="broadOpenNext" type="button" class="primary full">Open next one-way search ↗</button>
+      <button id="broadOpenNext" type="button" class="primary full">Find prices for the next flight ↗</button>
       <div id="broadSearches" class="broad-searches"></div>
       <div id="broadCaptureArea" class="broad-capture" hidden>
         <strong>Captured flight results ready</strong>
@@ -106,19 +114,20 @@
         <label for="broadCaptureTask">Assign captured results to</label>
         <select id="broadCaptureTask"></select>
         <label class="import-confirm"><input type="checkbox" id="broadConfirmOneWay"/> I confirm this Google Flights page is a ONE-WAY search, not a round-trip search.</label>
-        <button id="broadCaptureSave" type="button" class="primary full">Cache these one-way Best results &amp; compare</button>
+        <button id="broadCaptureSave" type="button" class="primary full">Import these flight estimates</button>
       </div>
-      <h3 class="broad-section-heading">Preliminary itinerary comparison</h3>
+      <h3 class="broad-section-heading">Estimated trip costs</h3>
       <p id="broadSummary" class="helper"></p>
       <div id="broadComparison"></div>
-      <p class="helper">Estimated flight prices exclude unverified bag fees. Missing bus, ferry or transfer costs remain unpriced. A complete indicative estimate is not a verified booking total; confirm actual tickets for the finalists.</p>
+      <p class="helper">Estimates may exclude baggage and transfers. Verify the full booking price before deciding.</p>
+      <details class="manual-import-tools">
+        <summary>Having trouble importing flight results?</summary>
+        <div class="manual-import-content">
+          <button id="showGoogleFlightsOverlay" class="secondary" type="button">Show manual import buttons on Google Flights</button>
+          <p class="helper">Open a Google Flights results tab first, then import a flight or the visible results.</p>
+        </div>
+      </details>
     </section>
-    <div class="gf-overlay-action">
-      <button id="showGoogleFlightsOverlay" class="secondary" type="button">Show flight import overlay on Google Flights</button>
-      <p class="helper">On an open Google Flights search tab, this displays an Import all button and individual Import buttons on each detected flight card.</p>
-    </div>
-    <p id="pendingCaptureNotice" class="capture-notice" hidden>Flight results received. Click Import flight on the matching leg.</p>
-    <div id="routes" class="routes"></div>
 
     <section id="manualEditor" class="card manual-editor" hidden>
       <div class="editor-title"><h2>Build a multimodal alternative</h2><button id="closeManual" class="ghost" type="button">Close</button></div>
@@ -179,7 +188,7 @@
     <section id="ticketEditor" class="card offer-editor" hidden>
       <div class="editor-title"><h2>Save one round-trip ticket</h2><button id="closeTicketEditor" class="ghost" type="button">Close</button></div>
       <p id="ticketLegs" class="ticket-legs helper"></p>
-      <p class="helper">One all-in ticket cost covers BOTH listed flights. RouteWise will count it once in every itinerary containing this exact pair. Other routes still use their own prices.</p>
+      <p class="helper">Enter the total price for both flights together. RouteWise counts this ticket once for each itinerary containing the same pair.</p>
       <div id="ticketQuoteArea" hidden>
         <label for="ticketQuoteChoice">Imported Google Flights round-trip quote (select a flight or seller)</label>
         <select id="ticketQuoteChoice"></select>
@@ -221,10 +230,17 @@
       </form>
     </section>
 
+    <details class="card data-tools">
+      <summary><span>Data &amp; privacy</span><span class="muted">Export or clear saved prices</span></summary>
+      <div class="card-content">
+        <p class="helper">Your saved travel data stays in this Chrome extension. Export a copy or remove saved fare entries.</p>
+        <div class="data-actions">
+          <button class="secondary" id="export">Export my trip data</button>
+          <button class="danger" id="clearOffers">Clear saved fares</button>
+        </div>
+      </div>
+    </details>
     <footer>
-      <button class="ghost" id="domDemo">DOM extraction demo</button>
-      <button class="ghost" id="export">Export my data (JSON)</button>
-      <button class="danger" id="clearOffers">Clear saved offers</button>
       <p id="status" role="status" aria-live="polite"></p>
     </footer>
   </main>

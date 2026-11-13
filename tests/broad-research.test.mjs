@@ -142,7 +142,7 @@ test('browser workflow exposes research capture but does not save search prices 
   const html=readFileSync(new URL('../panel.html',import.meta.url),'utf8');
   const panel=readFileSync(new URL('../panel.mjs',import.meta.url),'utf8');
   assert.match(html,/broadOpenNext/);assert.match(html,/broadCaptureTask/);assert.match(html,/broadConfirmOneWay/);
-  assert.match(html,/Preliminary itinerary comparison/);
+  assert.match(html,/Estimated trip costs/);
   assert.match(panel,/captureBroadSearch\(pendingFlightCapture,task/);
   assert.match(panel,/broadCache\[task.key\]=record/);
   assert.match(panel,/broadCache = saved.broadCache/);

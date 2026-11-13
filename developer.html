@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>RouteWise Developer Console</title>
+  <link rel="stylesheet" href="developer.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">↗</span><span>RouteWise <strong>Developer Console</strong></span></div>
+    <span class="version">v0.4.9</span>
+  </header>
+  <main>
+    <div class="intro">
+      <div>
+        <p class="eyebrow">DIAGNOSTICS &amp; TESTING</p>
+        <h1>Developer Console</h1>
+        <p>Debug RouteWise in this tab. The Chrome side panel remains for travelers only.</p>
+      </div>
+      <button id="refresh" type="button" class="secondary">Refresh diagnostics</button>
+    </div>
+    <p class="privacy">Private travel descriptions and raw AI output may appear below. Do not share screenshots or exports without reviewing the contents. API keys are not requested or displayed here.</p>
+
+    <section class="summary" aria-label="Current project summary">
+      <div class="metric"><span>Generated routes</span><strong id="routeCount">—</strong></div>
+      <div class="metric"><span>Flight searches cached</span><strong id="cachedSearches">—</strong></div>
+      <div class="metric"><span>Verified one-way fares</span><strong id="verifiedFares">—</strong></div>
+      <div class="metric"><span>Linked round-trip tickets</span><strong id="linkedTickets">—</strong></div>
+    </section>
+
+    <section class="card">
+      <div class="heading"><div><h2>AI interpretation</h2><p>Original response, normalized plan, model and timings.</p></div><span id="aiState" class="pill">No data</span></div>
+      <div class="info-grid">
+        <div><span>Model</span><strong id="aiModel">—</strong></div>
+        <div><span>Reference date</span><strong id="referenceDate">—</strong></div>
+        <div><span>Groq request</span><strong id="groqTiming">—</strong></div>
+        <div><span>Server total</span><strong id="serverTiming">—</strong></div>
+      </div>
+      <details><summary>Date evidence and normalization corrections</summary>
+        <label for="dateEvidence">Date evidence</label><pre id="dateEvidence">—</pre>
+        <label for="corrections">Server corrections</label><pre id="corrections">—</pre>
+        <label for="clientCorrections">Client safety corrections</label><pre id="clientCorrections">—</pre>
+      </details>
+      <details><summary>Raw Groq response</summary><pre id="rawGroq">No AI interpretation has been saved.</pre></details>
+      <details><summary>Normalized plan and traveler warnings</summary><pre id="normalizedPlan">—</pre><pre id="planWarnings">—</pre></details>
+    </section>
+
+    <section class="card">
+      <div class="heading"><div><h2>Capture and research</h2><p>Local data summaries only. Estimates are not verified fares.</p></div></div>
+      <div class="info-grid">
+        <div><span>Flight timing entries</span><strong id="flightTimes">—</strong></div>
+        <div><span>Ground timing entries</span><strong id="groundTimes">—</strong></div>
+        <div><span>Reviewed flight details</span><strong id="flightResearch">—</strong></div>
+        <div><span>Pending capture</span><strong id="pendingCapture">—</strong></div>
+      </div>
+      <details><summary>Stored flight-search keys and capture metadata</summary><pre id="researchDetails">—</pre></details>
+    </section>
+
+    <section class="card">
+      <div class="heading"><div><h2>Testing tools</h2><p>Run checks here without changing the traveler's current trip.</p></div></div>
+      <div class="actions">
+        <button id="sampleParse" type="button" class="primary">Validate sample trip</button>
+        <button id="domDemo" type="button" class="secondary">Open flight-card DOM demo</button>
+      </div>
+      <pre id="testOutput" class="test-output" role="status" aria-live="polite">Select a test to see its result.</pre>
+    </section>
+
+    <section class="card">
+      <div class="heading"><div><h2>Recent activity</h2><p>Last 50 status messages, stored locally in this extension.</p></div><button id="clearEvents" type="button" class="ghost">Clear log</button></div>
+      <div id="eventLog" class="event-log" aria-live="polite">No activity recorded yet.</div>
+    </section>
+    <p id="consoleStatus" class="foot-status" role="status"></p>
+  </main>
+  <script type="module" src="developer.mjs"></script>
+</body>
+</html>
