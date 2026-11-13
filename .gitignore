@@ -1,3 +1,21 @@
+# API keys and environment variables
 .env
+.env.*
+!.env.example
+
+# Dependencies
 node_modules/
+
+# Build output
+dist/
+build/
+
+# System files
 .DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Generated from third-party GTFS feeds (may have separate redistribution terms)
+/data/transit-network.json

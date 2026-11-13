@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "RouteWise \u2014 Travel Scenario Planner",
-  "version": "0.2.1",
-  "description": "AI-assisted trip interpretation and source-linked itinerary comparison. No automatic fare scraping.",
+  "name": "RouteWise — Travel Scenario Planner",
+  "version": "0.4.9",
+  "description": "Trip scenarios with user-reviewed flight imports and multimodal comparisons.",
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",
-    "sidePanel"
+    "sidePanel",
+    "contextMenus"
   ],
   "host_permissions": [
     "http://127.0.0.1:8787/*"
@@ -14,6 +15,13 @@
   "background": {
     "service_worker": "service-worker.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["https://www.google.com/travel/flights*"],
+      "js": ["flights-overlay.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "action": {
     "default_title": "Open RouteWise"
   },

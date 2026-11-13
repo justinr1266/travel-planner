@@ -7,11 +7,16 @@ export function applyPlanToForm(plan, currentTrip, currentBag) {
     if (plan[name] !== null) trip[name] = plan[name];
     else retained.push(name);
   }
-  // A country without a city must not leave a stale La Palma selection active.
+  // Open-ended discovery must not accidentally retain a stale island preference.
+  trip.destinationSearch = ['open','region','specified'].includes(plan.destination_search)
+    ? plan.destination_search : 'specified';
   if (plan.preferred !== null) trip.preferred = plan.preferred;
-  else if (plan.requested_regions.length) trip.preferred = '';
-  else retained.push('preferred stop');
+  else trip.preferred = ''; // Never retain a prior trip's destination when AI cannot ground this one.
   trip.requestedRegion = plan.requested_regions[0] || '';
+  // Default to destination time unless the user explicitly requested otherwise.
+  if (plan.priority && plan.priority !== 'unspecified') trip.goal = plan.priority;
+  else trip.goal = trip.goal || 'more_time_at_preferred';
+  trip.arrivalRule = plan.fixed_arrival === true ? 'fixed' : 'by';
   if (plan.depart_earliest !== null) trip.startDate = plan.depart_earliest;
   else retained.push('departure date');
   if (plan.arrive_latest !== null) trip.endDate = plan.arrive_latest;

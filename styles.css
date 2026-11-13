@@ -6,7 +6,7 @@ body{margin:0;background:#fff;color:var(--ink);font:13px/1.48 system-ui,-apple-s
 main{padding:0 16px 22px}.hero{padding:19px 3px 12px}.eyebrow{font-size:10px;font-weight:800;letter-spacing:1.5px;color:var(--primary);margin:0 0 6px}.hero h1{font-size:22px;letter-spacing:-.7px;margin:0 0 7px;line-height:1.2}.hero>p:not(.eyebrow){margin:0 0 9px;color:var(--muted)}.hero .notice{color:#8b5a16!important;background:#fff7e7;padding:8px 10px;border-radius:7px;font-size:11px}
 h2{font-size:15px;margin:0;letter-spacing:-.25px}.card{border:1px solid var(--border);border-radius:12px;margin:12px 0;background:#fff;overflow:hidden}.card summary{padding:13px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-weight:750;list-style:none}.card summary::-webkit-details-marker{display:none}.muted,.helper{color:var(--muted);font-size:11px}.card-content{padding:0 13px 14px}.helper{margin:6px 0 0}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:9px}.four-col{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
 label{display:block;font-size:11px;font-weight:700;margin:10px 0 4px}label small{font-size:10px;color:var(--muted);font-weight:400}input,select,textarea{font:inherit;width:100%;min-width:0;background:white;color:var(--ink);border:1px solid #ccd6e4;border-radius:7px;padding:8px}textarea{resize:vertical}input:focus,select:focus,textarea:focus{outline:2px solid #a6befd;border-color:var(--primary)}button{font:inherit;font-weight:690;cursor:pointer;border-radius:7px;padding:8px 11px;border:1px solid transparent}button:hover{filter:brightness(.97)}button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--primary);color:#fff}.secondary{background:var(--light);color:var(--primary)}.ghost{background:transparent;border:1px solid var(--border);color:var(--ink)}.danger{background:transparent;border:1px solid #f0d3d3;color:#a33939}.full{width:100%;margin-top:13px}.results-head{display:flex;align-items:center;justify-content:space-between;margin:20px 1px 0}.count{font-size:12px;background:var(--surface);color:var(--muted);border-radius:20px;padding:4px 9px}.routes{display:flex;flex-direction:column;gap:12px;margin-top:12px}
-.route{border:1px solid var(--border);border-radius:12px;overflow:hidden}.route-head{padding:12px 13px 8px;display:flex;justify-content:space-between;gap:8px}.route-head h3{margin:0;font-size:13px}.route-head p{margin:5px 0 0;font-size:11px;color:var(--muted)}.route-cost{text-align:right;flex:0 0 94px;font-size:16px;font-weight:790}.route-cost small{display:block;font-size:10px;font-weight:500;color:var(--muted)}.route-body{padding:0 13px 13px}.route-dest{color:var(--muted);font-size:11px;margin-bottom:10px}.leg{display:flex;align-items:flex-start;justify-content:space-between;border-top:1px solid #eef1f6;padding:9px 0;gap:7px}.leg-title{font-size:12px;font-weight:680}.leg-meta{font-size:10px;color:var(--muted)}.leg-pricing{font-size:11px;color:var(--good);font-weight:680}.leg-actions{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;min-width:105px}.leg-actions button{font-size:10px;padding:5px 7px}.tag{display:inline-block;font-size:10px;color:#50617b;background:var(--surface);border-radius:5px;padding:2px 5px}.route-complete{border-color:#a4d6c1}.route-complete .route-head{background:#f3fbf6}
+.route{border:1px solid var(--border);border-radius:12px;overflow:hidden}.route-head{padding:12px 13px 8px;display:flex;justify-content:space-between;gap:8px}.route-head h3{margin:0;font-size:13px}.route-head p{margin:5px 0 0;font-size:11px;color:var(--muted)}.route-cost{text-align:right;flex:0 0 94px;font-size:16px;font-weight:790}.route-cost small{display:block;font-size:10px;font-weight:500;color:var(--muted)}.route-body{padding:0 13px 13px}.route-dest{color:var(--muted);font-size:11px;margin-bottom:10px}.leg{display:flex;align-items:flex-start;justify-content:space-between;border-top:1px solid #eef1f6;padding:9px 0;gap:7px}.leg-title{font-size:12px;font-weight:680}.leg-meta{font-size:10px;color:var(--muted)}.leg-pricing{font-size:11px;color:var(--good);font-weight:680}.leg-updated{background:#f3fbf6;outline:2px solid #8bc8ad;outline-offset:-2px;border-radius:5px}.leg-actions{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;min-width:105px}.leg-actions button{font-size:10px;padding:5px 7px}.tag{display:inline-block;font-size:10px;color:#50617b;background:var(--surface);border-radius:5px;padding:2px 5px}.route-complete{border-color:#a4d6c1}.route-complete .route-head{background:#f3fbf6}
 .offer-editor{padding:13px;scroll-margin-top:65px}.editor-title{display:flex;align-items:center;justify-content:space-between}.offer-editor[hidden]{display:none}footer{padding-top:18px;display:flex;gap:9px;flex-wrap:wrap}footer button{font-size:11px}#status{flex-basis:100%;color:var(--muted);font-size:11px;margin:0}.link{color:var(--primary);font-size:10px;overflow-wrap:anywhere;text-decoration:none}.link:hover{text-decoration:underline}
 
 /* Milestone 2: structured AI plan preview */
@@ -18,3 +18,108 @@ label{display:block;font-size:11px;font-weight:700;margin:10px 0 4px}label small
 .parse-preview .data-field strong{display:block;font-size:10px;color:var(--muted);margin-bottom:2px}
 .parse-preview ul{font-size:11px;padding-left:17px;margin:7px 0}
 .parse-preview .parse-warnings{color:#915516}.parse-preview .parse-source{font-size:10px;color:var(--muted);margin:7px 0}
+
+/* v0.3.4: explicitly label unverified primary-destination time windows */
+.stay-note{background:#eef7f1;color:#17634d;border-radius:6px;padding:7px 8px;font-size:11px;line-height:1.45;margin:8px 0}
+.route-warning{font-size:10px;color:#865522;margin:5px 0}
+
+/* Local development-only parser diagnostics; collapsed unless requested. */
+.parse-debug { margin: 12px 0; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
+.parse-debug summary { cursor: pointer; font-weight: 600; }
+.parse-debug pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow-y: auto; background: #f1f5f9; border-radius: 6px; padding: 8px; font-size: 11px; color: #26354b; }
+
+/* v0.4.0 — editable multi-mode route copies. */
+.route-copy{font-size:10px;margin-top:8px;padding:5px 7px}
+.manual-editor{padding:13px;scroll-margin-top:62px}
+.manual-editor[hidden]{display:none}
+.manual-editor .helper{line-height:1.55}
+.manual-leg{border:1px solid var(--border);border-radius:9px;background:var(--surface);margin-top:11px;padding:10px}
+.manual-leg label{font-size:10px;margin:7px 0 3px}
+.manual-leg input,.manual-leg select{padding:7px;font-size:11px}
+.manual-row-heading{display:flex;justify-content:space-between;align-items:center;gap:5px;flex-wrap:wrap}
+.manual-row-heading button{font-size:9px;padding:5px 6px}
+
+/* v0.4.3.1: compact, visible connection assessments beside the onward flight. */
+.connection-check{border:1px solid #d8e3f5;border-radius:9px;background:#f7faff;padding:10px;margin:9px 0}
+.connection-heading{display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:11px;flex-wrap:wrap}
+.connection-state{font-size:10px;color:#395a88;background:#e9f0fb;border-radius:5px;padding:2px 6px;font-weight:700}
+.connection-good{border-color:#bcdacb;background:#f6fbf7}.connection-good .connection-state{color:#137856;background:#e4f5eb}
+.connection-bad{border-color:#efd1bc;background:#fff9f2}.connection-bad .connection-state{color:#9a571c;background:#ffedd5}
+.connection-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:10px 0}
+.connection-facts>div{min-width:0}
+.connection-facts span{display:block;font-size:10px;color:var(--muted);line-height:1.2}
+.connection-facts strong{font-size:11px;overflow-wrap:anywhere}
+.connection-info{font-size:10px;color:var(--muted);margin:6px 0}
+.connection-time-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:6px;align-items:end;margin-top:7px}
+.connection-time-form label{font-size:10px;margin:0}
+.connection-time-form input{font-size:11px;margin-top:3px;padding:6px}
+.connection-time-form button{font-size:10px;padding:6px}
+
+/* v0.4.3.2 — visible buffer state and editable ground arrival. */
+.buffer-summary{font-size:11px;font-weight:650;color:#274c88;border:1px solid #d8e3f5;background:#f3f7ff;border-radius:8px;padding:8px 10px;margin:8px 0}
+.ground-arrival-edit{margin:8px 0;padding:6px 8px;border:1px dashed #bfcee4;border-radius:7px}
+.ground-arrival-edit summary{font-size:11px;font-weight:650;cursor:pointer}
+.ground-arrival-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;align-items:end;margin-top:7px}
+.ground-arrival-form label{font-size:10px;margin:0}
+.ground-arrival-form input{font-size:11px;margin-top:3px;padding:6px}
+.ground-arrival-form button{font-size:10px;padding:6px}
+
+/* v0.4.4: explicit user-assisted flight review, without DOM scraping. */
+.capture-notice{border:1px solid #b9d5ef;background:#f1f8ff;padding:10px;border-radius:8px;font-size:11px}
+.import-actions{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+.import-actions button{font-size:11px}
+.import-confirm{display:flex;align-items:flex-start;gap:9px;padding:9px;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:11px}
+.import-confirm input{width:auto;margin:2px 0 0;flex:0 0 auto}
+.import-source-note{color:var(--good);font-size:10px;margin-top:3px}
+#flightImport{scroll-margin-top:68px}
+
+/* Google Flights pasted round-trip text: preview without double-counted fares. */
+.roundtrip-review {border:1px solid var(--border, #cdd6df);padding:12px;border-radius:10px;margin:10px 0;background:var(--card, transparent);}
+.roundtrip-review[hidden] {display:none;}
+.roundtrip-direction {margin:9px 0;padding:8px 0;border-bottom:1px solid var(--border, #d1d5db);}
+.roundtrip-direction strong,.roundtrip-direction small {display:block;margin-bottom:4px;}
+
+/* v0.4.6 — searchable, user-reviewed Google Flights result list. */
+.flight-search-options{display:grid;gap:8px;max-height:340px;overflow-y:auto;margin-top:10px}
+.flight-search-option{border:1px solid var(--border,#d5dce6);border-radius:8px;padding:9px;display:flex;align-items:flex-start;justify-content:space-between;gap:9px;font-size:11px}
+.flight-search-option strong{font-size:12px}
+.flight-search-option small{color:var(--muted);display:block;margin:4px 0}
+.flight-search-option button{font-size:10px;flex:0 0 auto;max-width:110px;white-space:normal}
+.flight-search-option.option-mismatch{opacity:.65}
+.search-quote{font-weight:650;margin-top:5px}
+
+/* v0.4.7: launch the browser overlay from the RouteWise side panel. */
+.gf-overlay-action{border:1px solid #cddbec;border-radius:9px;padding:10px;margin:9px 0;background:#f7faff}
+.gf-overlay-action button{font-size:11px}
+.gf-overlay-action p{margin:6px 0 0}
+
+/* v0.4.8: one checked booking shared by outbound and return flight legs. */
+#ticketEditor{scroll-margin-top:68px}
+.ticket-legs{background:#f0f6ff;border:1px solid #d4e3f8;padding:10px;border-radius:8px;line-height:1.6}
+.ticket-link{font-size:10px;margin-top:5px;color:#205581;font-weight:650}
+.ticket-link small{font-weight:400;color:var(--muted)}
+.ticket-covered{border-left:3px solid #4380bb;padding-left:6px}
+#ticketQuoteArea:not([hidden]){padding:9px;border:1px solid var(--border);border-radius:8px;margin:9px 0}
+#removeTicket:not([hidden]){margin-top:8px}
+
+/* v0.4.8.1: two actions per imported Google Flights search result. */
+.flight-search-option-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+
+/* v0.4.9: separate, deliberately indicative broad flight comparison. */
+.broad-research{padding:13px;margin:12px 0;display:block}
+.broad-title,.broad-route-head{display:flex;align-items:center;justify-content:space-between;gap:7px}
+.broad-title h3,.broad-section-heading{font-size:13px;margin:0 0 6px}
+.broad-section-heading{margin-top:15px}
+.broad-searches{margin:10px 0;display:grid;gap:7px}
+.broad-task{border:1px solid var(--border);border-radius:8px;padding:9px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px}
+.broad-task small{display:block;color:var(--muted);margin-top:3px}
+.broad-task button{font-size:10px;padding:5px 7px;margin:2px}
+.broad-capture{background:#f1f8ff;border:1px solid #b9d5ef;border-radius:9px;padding:10px;margin:12px 0;font-size:11px}
+.broad-capture[hidden]{display:none}
+.broad-route{padding:9px 0;border-bottom:1px solid var(--border);font-size:11px}
+.broad-route-head{align-items:start}
+.broad-route .helper{line-height:1.45}
+
+.broad-options{border:1px solid var(--border);border-radius:7px;padding:7px;margin:-3px 0 3px;background:var(--surface)}
+.broad-options summary{font-size:10px;font-weight:650;cursor:pointer}
+.broad-option{display:flex;justify-content:space-between;gap:8px;font-size:10px;padding:7px 0;border-top:1px solid var(--border)}

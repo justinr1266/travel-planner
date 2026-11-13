@@ -1,0 +1,22 @@
+RouteWise v0.4.1.1 - Primary destination safety fix
+
+Requires RouteWise v0.4.1. No need to reinstall, sync airports, or reimport Renfe GTFS.
+
+1. Extract routewise-v0.4.1.1-destination-guard.patch into your RouteWise project root.
+2. Run these commands in order:
+   git apply --check routewise-v0.4.1.1-destination-guard.patch
+   git apply routewise-v0.4.1.1-destination-guard.patch
+   npm test
+3. Restart local Groq server: Ctrl+C, then npm run server
+4. Reload the extension at chrome://extensions.
+5. Interpret your original Barcelona > La Palma > Madrid request again.
+
+Changes:
+- AI raw code LPQ/GCT/TFN is corrected to the traveler-named destination where resolvable.
+- When the preferred airport isn't grounded in the request, it is cleared for review.
+- Prevents retaining the old trip's preferred airport when the new one is uncertain.
+- Rechecks original text during Apply and Generate; preserves fixed-date constraints.
+- Shows side-panel corrections separately from server-side AI corrections.
+- No destination-specific mappings. Does not modify .env, airport-catalog.mjs, or local GTFS data.
+
+Verified: clean application over v0.4.1, 111 tests passed with both bootstrap and expanded simulated catalogs.

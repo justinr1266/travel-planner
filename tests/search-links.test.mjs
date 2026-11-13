@@ -93,17 +93,15 @@ test('each leg can only appear in one round-trip pair', () => {
   assert.deepEqual(findRoundTripPairs([outward,returning,{...outward,date:'2027-02-11'},{...returning,date:'2027-02-15'}]),
     [{outboundIndex:0,returnIndex:1},{outboundIndex:2,returnIndex:3}]);
 });
-test('generated train-first Canary Islands trip has real pairing', () => {
-  const route = generatePlannedRoutes({
-    origin:'BCN',preferred:'SPC',destination:'MAD',requested_regions:['Canary Islands'],
-    depart_earliest:'2027-02-02',depart_latest:'2027-02-04',arrive_latest:'2027-02-10',
-    min_nights_at_preferred:null
-  }).find(r=>r.id==='islands-rail-madrid');
-  assert.ok(route);
-  const pairs = findRoundTripPairs(route.legs);
-  assert.deepEqual(pairs,[{outboundIndex:1,returnIndex:2}]);
-  const {tripType,legs} = decodedLink(googleFlightsRoundTripUrl(route.legs[1],route.legs[2]));
-  assert.equal(tripType,1);
-  assert.equal(legs[0].date,route.legs[1].date);
-  assert.equal(legs[1].date,route.legs[2].date);
+test('generic round-trip vacation produces a correctly dated pair',()=>{
+  const plan={origin:'MIL',preferred:'SPC',destination:'MIL',requested_regions:[],
+    depart_earliest:'2027-01-11',depart_latest:'2027-01-11',
+    arrive_earliest:'2027-01-18',arrive_latest:'2027-01-18',fixed_arrival:true,
+    priority:'more_time_at_preferred',min_nights_at_preferred:null};
+  const route=generatePlannedRoutes(plan)[0];
+  const pairs=findRoundTripPairs(route.legs);
+  assert.deepEqual(pairs,[{outboundIndex:0,returnIndex:1}]);
+  const decoded=decodedLink(googleFlightsRoundTripUrl(route.legs[0],route.legs[1]));
+  assert.equal(decoded.tripType,1);
+  assert.deepEqual(decoded.legs.map(l=>l.date),['2027-01-11','2027-01-18']);
 });

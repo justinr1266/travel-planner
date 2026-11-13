@@ -9,7 +9,7 @@
 <body>
   <header class="topbar">
     <div class="wordmark"><span class="brand-mark">↗</span><span>RouteWise</span></div>
-    <span class="version">MVP 0.3</span>
+    <span class="version">MVP 0.4.8.1</span>
   </header>
   <main>
     <section class="hero">
@@ -34,15 +34,38 @@
           <div><label for="origin">Start</label><select id="origin"></select></div>
           <div><label for="destination">End</label><select id="destination"></select></div>
         </div>
+        <label for="destinationSearch">Destination selection</label>
+        <select id="destinationSearch"><option value="specified">Specific destination</option><option value="region">Suggest cities inside a region (Groq)</option><option value="open">Explore destinations (Groq)</option></select>
+        <p class="helper">Groq suggests destinations; RouteWise validates airport names and codes against its local directory.</p>
         <label for="requestedRegion">Requested region (optional)</label>
-        <select id="requestedRegion"><option value="">None specified</option><option value="Portugal">Portugal</option><option value="Canary Islands">Canary Islands</option></select>
-        <label for="preferred">Preferred stop (optional)</label><select id="preferred"></select>
+        <input id="requestedRegion" placeholder="Country or region (optional)" />
+        <label for="preferred">Primary vacation destination (optional)</label><select id="preferred"></select>
+        <label for="goal">Main planning goal</label>
+        <select id="goal">
+          <option value="more_time_at_preferred">Maximize time at primary destination (default)</option>
+          <option value="lowest_cost">Minimize transportation cost</option>
+          <option value="balance">Balance cost and convenience</option>
+          <option value="fastest">Minimize total travel time</option>
+        </select>
+
         <div class="two-col">
           <div><label for="startDate">Departure date</label><input type="date" id="startDate" value="2027-02-02" /></div>
           <div><label for="endDate">Final arrival date</label><input type="date" id="endDate" value="2027-02-10" /></div>
         </div>
+        <label for="connectionBuffer">Ground arrival → onward flight buffer</label>
+        <select id="connectionBuffer">
+          <option value="120">2 hours</option>
+          <option value="180" selected>3 hours (default)</option>
+          <option value="240">4 hours</option>
+        </select>
+        <label for="arrivalRule">Final arrival requirement</label>
+        <select id="arrivalRule">
+          <option value="by">Arrive no later than this date</option>
+          <option value="fixed">Arrive exactly on this date</option>
+        </select>
         <button class="primary full" id="generate">Generate candidate routes</button>
-        <p class="helper">Creates up to five unverified route patterns from supported regions (Portugal and the Canary Islands), using tentative dates. No live schedules, fares, or transfer feasibility are checked. Edit the visible dates or constraints before generating.</p>
+        <p id="generationStatus" class="helper" role="status" aria-live="polite"></p>
+        <p class="helper">Optional GTFS train, bus, and ferry data improves route suggestions. Ground-to-flight routes show the connection buffer even when the timetable is missing; you can enter ground and flight times to test it.</p>
       </div>
     </details>
 
@@ -68,11 +91,117 @@
       </div>
       <span id="routeCount" class="count">0</span>
     </section>
-    <p class="helper">Fully priced routes sort by total cost. Partial routes are never described as cheapest.</p>
+    <p class="helper">Saved fares determine priced rankings. Use <strong>Make multimodal copy</strong> to edit a route; GTFS and flight connection checks are shown where times are known.</p>
+    <p id="bufferSummary" class="buffer-summary" role="status"></p>
+    <p id="priceSaveNotice" class="capture-notice" hidden role="status" aria-live="polite"></p>
+    <section class="card broad-research" id="broadResearch">
+      <div class="broad-title"><h3>04 · Broad flight research</h3><span class="tag">Indicative</span></div>
+      <p class="helper">Open each UNIQUE one-way search on Google Flights' Best tab, click Import all visible flights in the page overlay, then RouteWise automatically caches those results when the page URL still matches the opened search. Otherwise confirm the one-way context below. Top five unique results per search; no API credits. Trains are estimated at €20 per leg. Verified saved fares stay separate.</p>
+      <p id="broadStats" class="helper"></p>
+      <button id="broadOpenNext" type="button" class="primary full">Open next one-way search ↗</button>
+      <div id="broadSearches" class="broad-searches"></div>
+      <div id="broadCaptureArea" class="broad-capture" hidden>
+        <strong>Captured flight results ready</strong>
+        <p id="broadCaptureStatus" class="helper"></p>
+        <label for="broadCaptureTask">Assign captured results to</label>
+        <select id="broadCaptureTask"></select>
+        <label class="import-confirm"><input type="checkbox" id="broadConfirmOneWay"/> I confirm this Google Flights page is a ONE-WAY search, not a round-trip search.</label>
+        <button id="broadCaptureSave" type="button" class="primary full">Cache these one-way Best results &amp; compare</button>
+      </div>
+      <h3 class="broad-section-heading">Preliminary itinerary comparison</h3>
+      <p id="broadSummary" class="helper"></p>
+      <div id="broadComparison"></div>
+      <p class="helper">Estimated flight prices exclude unverified bag fees. Missing bus, ferry or transfer costs remain unpriced. A complete indicative estimate is not a verified booking total; confirm actual tickets for the finalists.</p>
+    </section>
+    <div class="gf-overlay-action">
+      <button id="showGoogleFlightsOverlay" class="secondary" type="button">Show flight import overlay on Google Flights</button>
+      <p class="helper">On an open Google Flights search tab, this displays an Import all button and individual Import buttons on each detected flight card.</p>
+    </div>
+    <p id="pendingCaptureNotice" class="capture-notice" hidden>Flight results received. Click Import flight on the matching leg.</p>
     <div id="routes" class="routes"></div>
 
+    <section id="manualEditor" class="card manual-editor" hidden>
+      <div class="editor-title"><h2>Build a multimodal alternative</h2><button id="closeManual" class="ghost" type="button">Close</button></div>
+      <p class="helper">Copy an itinerary, switch any leg to train/bus/ferry, and insert explicit transfers. Flight endpoints must be real airport codes; stations, stops and ports are user-entered and unverified. Every leg must connect to the next terminal.</p>
+      <form id="manualForm">
+        <label for="manualName">Scenario name</label><input id="manualName" maxlength="90" required />
+        <div id="manualLegRows"></div>
+        <button class="primary full" type="submit">Save multimodal alternative</button>
+      </form>
+    </section>
+
+    <section id="flightImport" class="card offer-editor" hidden>
+      <div class="editor-title"><h2>Import a researched flight</h2><button id="closeFlightImport" class="ghost" type="button">Close</button></div>
+      <p id="flightImportLeg" class="helper"></p>
+      <p class="helper">On Google Flights, use the RouteWise overlay to send a card or all results here. You can also paste a flight summary or use the right-click selection. Review all fields before saving.</p>
+      <label for="flightImportText">Selected or pasted flight details</label>
+      <textarea id="flightImportText" rows="4" placeholder="Paste copied Google Flights search results, selected round-trip details, or one result card&#39;s HTML"></textarea>
+      <div class="import-actions"><button type="button" id="useFlightCapture" class="secondary">Use browser capture</button>
+      <button type="button" id="parseFlightImport" class="secondary">Analyze pasted flight information</button>
+      <button type="button" id="discardFlightCapture" class="ghost">Discard browser capture</button></div>
+      <p class="helper" id="flightImportHints" role="status"></p>
+      <div id="flightImportPreview" class="roundtrip-review" hidden></div>
+      <form id="flightImportForm">
+        <div class="two-col">
+          <div><label for="flightImportCarrier">Airline (optional)</label><input id="flightImportCarrier" maxlength="90" placeholder="Iberia" /></div>
+          <div><label for="flightImportNumber">Flight number (optional)</label><input id="flightImportNumber" maxlength="35" placeholder="IB1234" /></div>
+        </div>
+        <div class="two-col">
+          <div><label for="flightImportDeparture">Departure (local time)</label><input id="flightImportDeparture" type="time" /></div>
+          <div><label for="flightImportArrival">Arrival (local time, optional)</label><input id="flightImportArrival" type="time" /></div>
+        </div>
+        <label for="flightImportArrivalDayOffset">Arrival day (relative to departure)</label>
+        <select id="flightImportArrivalDayOffset"><option value="0">Same day</option><option value="1">Next day (+1)</option><option value="2">Two days later (+2)</option></select>
+        <label for="flightImportZone">Departure airport time zone (IANA; required for timing check, optional for fare)</label>
+        <input id="flightImportZone" placeholder="Europe/Madrid" />
+        <div class="two-col">
+          <div><label for="flightImportStops">Stops (optional)</label><input id="flightImportStops" min="0" max="99" type="number" step="1" /></div>
+          <div><label for="flightImportFare">Checked one-way fare (€)</label><input id="flightImportFare" min="0" type="number" step="0.01" placeholder="Use EUR only" /></div>
+        </div>
+        <p id="flightImportQuoteNotice" class="helper" hidden></p>
+        <label class="import-confirm"><input id="flightImportOneWayVerified" type="checkbox" /> I verified that the EUR fare above is for this exact one-way flight leg, not a round-trip total or an added return-flight price. The booking seller and baggage terms match this fare.</label>
+        <label for="flightImportBagStatus">Overhead carry-on allowance</label>
+        <select id="flightImportBagStatus"><option value="unknown">Not checked yet</option><option value="included">Included in this fare</option><option value="extra">Extra fee checked below</option></select>
+        <div class="two-col">
+          <div><label for="flightImportBagFee">Overhead bag fee (€)</label><input id="flightImportBagFee" type="number" min="0" step="0.01" placeholder="Required if extra" /></div>
+          <div><label for="flightImportTransferCost">Extra leg cost (€)</label><input id="flightImportTransferCost" type="number" min="0" step="0.01" value="0" /></div>
+        </div>
+        <label for="flightImportSource">Source page URL (optional)</label><input id="flightImportSource" type="url" placeholder="https://www.google.com/travel/flights/..." />
+        <label for="flightImportNotes">Notes (optional)</label><textarea id="flightImportNotes" rows="2" placeholder="Fare rules, layovers, cabin bag limits"></textarea>
+        <label class="import-confirm"><input id="flightImportConfirmed" type="checkbox" /> I checked the selected leg's airports, travel date and flight details.</label>
+        <div class="import-actions">
+          <button class="secondary" type="submit" name="saveMode" value="timing">Save checked departure time</button>
+          <button class="primary" type="submit" name="saveMode" value="fare">Save checked one-way EUR fare</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="ticketEditor" class="card offer-editor" hidden>
+      <div class="editor-title"><h2>Save one round-trip ticket</h2><button id="closeTicketEditor" class="ghost" type="button">Close</button></div>
+      <p id="ticketLegs" class="ticket-legs helper"></p>
+      <p class="helper">One all-in ticket cost covers BOTH listed flights. RouteWise will count it once in every itinerary containing this exact pair. Other routes still use their own prices.</p>
+      <div id="ticketQuoteArea" hidden>
+        <label for="ticketQuoteChoice">Imported Google Flights round-trip quote (select a flight or seller)</label>
+        <select id="ticketQuoteChoice"></select>
+        <p class="helper" id="ticketQuoteHelp">These are displayed quotes, not confirmed all-in costs. Verify the final seller, both flights and baggage before saving.</p>
+      </div>
+      <form id="ticketForm">
+        <div class="two-col">
+          <div><label for="ticketTotal">Checked all-in round-trip total (€)</label><input id="ticketTotal" type="number" min="0" step="0.01" placeholder="Full price for both flights" required /></div>
+          <div><label for="ticketSeller">Booking seller</label><input id="ticketSeller" placeholder="Airline or booking agency" required maxlength="100" /></div>
+        </div>
+        <label for="ticketSource">Source page URL (optional)</label><input id="ticketSource" type="url" placeholder="https://www.google.com/travel/flights/..." />
+        <label for="ticketNotes">Ticket notes (optional)</label><textarea id="ticketNotes" rows="2" placeholder="Flight numbers, booking reference, fare conditions"></textarea>
+        <label class="import-confirm"><input id="ticketConfirmed" type="checkbox" required /> I verified this price is for the exact outbound AND return flights shown above, from this booking seller.</label>
+        <label class="import-confirm"><input id="ticketBagVerified" type="checkbox" required /> The total entered includes the required overhead cabin bag for BOTH flights and any extra booking fees.</label>
+        <button class="primary full" type="submit">Save shared round-trip EUR total</button>
+      </form>
+      <button id="removeTicket" class="danger" type="button" hidden>Remove linked round-trip ticket</button>
+      <p id="ticketMessage" class="helper" role="status"></p>
+    </section>
+
     <section id="editor" class="card offer-editor" hidden>
-      <div class="editor-title"><h2>Save a verified offer</h2><button id="cancelEdit" class="ghost">Close</button></div>
+      <div class="editor-title"><h2>Save an externally checked fare / transfer cost</h2><button id="cancelEdit" class="ghost">Close</button></div>
       <p id="editingLeg" class="helper"></p>
       <form id="offerForm">
         <div class="two-col">
@@ -82,6 +211,10 @@
         <label for="transferCost">Extra transfer cost (€)</label><input id="transferCost" type="number" min="0" step="0.01" value="0" required />
         <label for="source">Source URL <small>(paste the actual search or fare page)</small></label>
         <input id="source" type="url" placeholder="https://www.google.com/travel/flights/..." />
+        <div class="two-col">
+          <div><label for="departureClock">Flight departure time (optional)</label><input id="departureClock" type="time" /></div>
+          <div><label for="departureTimezone">Flight departure time zone (IANA)</label><input id="departureTimezone" placeholder="Europe/Madrid" /></div>
+        </div>
         <label for="note">Notes <small>(carrier, baggage allowance, duration)</small></label>
         <textarea id="note" rows="2" placeholder="Carry-on included? Airline and fare type? Any transfer notes?"></textarea>
         <button class="primary full" type="submit">Save offer and update comparison</button>
