@@ -21,8 +21,8 @@
     <nav class="step-nav" aria-label="Trip planning steps">
       <a href="#tripSetup">1 · Trip</a>
       <a href="#bagProfile">2 · Bag</a>
-      <a href="#routeResults">3 · Routes</a>
-      <a href="#broadResearch">4 · Flights</a>
+      <a href="#routeResults">3 · Results</a>
+      <a href="#broadResearch">4 · Flight details</a>
     </nav>
 
     <details class="card" id="tripSetup" open>
@@ -68,7 +68,15 @@
           <option value="by">Arrive no later than this date</option>
           <option value="fixed">Arrive exactly on this date</option>
         </select>
-        <button class="primary full" id="generate">Generate candidate routes</button>
+        <button class="primary full" id="findBestRoutes" type="button">Find my best routes ↗</button>
+        <p id="workflowStatus" class="workflow-progress" role="status" aria-live="polite"></p>
+        <button id="workflowStop" type="button" class="ghost full" hidden>Stop after this flight search</button>
+        <details class="manual-import-tools">
+          <summary>Advanced: generate routes without researching flights</summary>
+          <div class="manual-import-content">
+            <button class="secondary full" id="generate" type="button">Generate candidate routes only</button>
+          </div>
+        </details>
         <p id="generationStatus" class="helper" role="status" aria-live="polite"></p>
         <p class="helper">Where schedules are available, RouteWise helps check train, bus and ferry connections. You can add travel times to check a connection yourself.</p>
       </div>
@@ -92,21 +100,40 @@
     <section class="results-head" id="routeResults">
       <div>
         <p class="eyebrow">03 · COMPARE YOUR ROUTES</p>
-        <h2>Candidate itineraries</h2>
+        <h2>Your route options</h2>
       </div>
       <span id="routeCount" class="count">0</span>
     </section>
-    <p class="helper">Compare routes, check connection times, or customize an itinerary. Only fares you have verified count as confirmed prices.</p>
+    <p class="helper">Estimated prices appear here as searches finish. Missing legs and unverified connections stay clearly marked.</p>
+    <section class="card route-shortlist" aria-label="Estimated route comparisons">
+      <div class="broad-title"><h3>Estimated trip costs</h3><span class="tag">Indicative</span></div>
+      <p id="broadSummary" class="helper"></p>
+      <div id="broadComparison"></div>
+      <p class="helper">These are search estimates, not bookable offers. Confirm dates, baggage, transfers and seller prices.</p>
+    </section>
     <p id="bufferSummary" class="buffer-summary" role="status"></p>
     <p id="priceSaveNotice" class="capture-notice" hidden role="status" aria-live="polite"></p>
     <p id="pendingCaptureNotice" class="capture-notice" hidden>Flight results received. Click Import flight on the matching leg.</p>
-    <div id="routes" class="routes"></div>
+    <details class="route-details" id="routeDetails">
+      <summary>Detailed itineraries, connections and saved fares</summary>
+      <p class="helper">Review each leg, check connection times, or customize a route. Only traveler-verified fares are confirmed.</p>
+      <div id="routes" class="routes"></div>
+    </details>
 
-    <section class="card broad-research" id="broadResearch">
-      <div class="broad-title"><h3>04 · Compare flight prices</h3><span class="tag">Estimates</span></div>
-      <p class="helper">Open each flight search and RouteWise will try to import the displayed results automatically. These are estimated prices, not confirmed offers. Check flight details, baggage and seller prices before booking. Train estimates use &euro;20 per leg.</p>
+    <details class="card broad-research" id="broadResearch">
+      <summary>04 · Flight search details and retries</summary>
+      <div class="research-detail-content">
+      <p class="helper">The main Find my best routes button starts this research automatically. Use these controls to retry individual flights or inspect captured options. Estimates are not confirmed fares; ground legs may use a &euro;20 train placeholder.</p>
       <p id="broadStats" class="helper"></p>
-      <button id="broadOpenNext" type="button" class="primary full">Find prices for the next flight ↗</button>
+      <button id="broadImportAll" type="button" class="primary full">Import all missing flight searches ↗</button>
+      <button id="broadStopImport" type="button" class="ghost full" hidden>Stop after this search</button>
+      <p id="broadBatchProgress" class="helper" role="status" aria-live="polite"></p>
+      <details class="manual-import-tools">
+        <summary>Search one flight at a time</summary>
+        <div class="manual-import-content">
+          <button id="broadOpenNext" type="button" class="secondary full">Find prices for the next flight ↗</button>
+        </div>
+      </details>
       <div id="broadSearches" class="broad-searches"></div>
       <div id="broadCaptureArea" class="broad-capture" hidden>
         <strong>Captured flight results ready</strong>
@@ -116,10 +143,6 @@
         <label class="import-confirm"><input type="checkbox" id="broadConfirmOneWay"/> I confirm this Google Flights page is a ONE-WAY search, not a round-trip search.</label>
         <button id="broadCaptureSave" type="button" class="primary full">Import these flight estimates</button>
       </div>
-      <h3 class="broad-section-heading">Estimated trip costs</h3>
-      <p id="broadSummary" class="helper"></p>
-      <div id="broadComparison"></div>
-      <p class="helper">Estimates may exclude baggage and transfers. Verify the full booking price before deciding.</p>
       <details class="manual-import-tools">
         <summary>Having trouble importing flight results?</summary>
         <div class="manual-import-content">
@@ -127,7 +150,8 @@
           <p class="helper">Open a Google Flights results tab first, then import a flight or the visible results.</p>
         </div>
       </details>
-    </section>
+      </div>
+    </details>
 
     <section id="manualEditor" class="card manual-editor" hidden>
       <div class="editor-title"><h2>Build a multimodal alternative</h2><button id="closeManual" class="ghost" type="button">Close</button></div>

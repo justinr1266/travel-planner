@@ -1,0 +1,168 @@
+diff --git a/developer.html b/developer.html
+index 90a467c..ceb9036 100644
+--- a/developer.html
++++ b/developer.html
+@@ -73,10 +73,16 @@
+         <span>Enable temporary price-import testing</span>
+       </label>
+       <p id="priceTestState" class="foot-status" role="status">Loading test setting…</p>
+-      <div class="actions"><button id="restartPriceImportTest" type="button" class="secondary" disabled>Restart price-import test · first flight</button></div>
++      <div class="actions"><button id="restartPriceImportTest" type="button" class="secondary" disabled>Restart imports only · keep routes</button></div>
+       <p class="privacy">Each reset keeps your trip, generated routes, baggage, Groq caches and transit data, but clears flight quotes, saved fares, imported flight details, flight times and import progress. It does not close Google Flights tabs or make Groq calls. Export important fares before enabling testing.</p>
+     </section>
+ 
++    <section class="card" id="planningResetTools">
++      <div class="heading"><div><h2>Reset planning session</h2><p>Clear the trip comparisons, flight and train research, recorded prices, and unfinished edits. Start with just your trip description.</p></div></div>
++      <div class="actions"><button id="resetPlanningSession" type="button" class="secondary">Reset all trip results</button></div>
++      <p class="privacy">This permanently deletes locally saved fares, tickets, flight and train quotes, generated and manual routes, interpretations, suggestions, timings, and captured research. Your written trip description, baggage profile, and developer price-test setting remain. API keys and downloaded GTFS data are not touched. Export important results first.</p>
++    </section>
++
+     <section class="card">
+       <div class="heading"><div><h2>Recent activity</h2><p>Last 50 status messages, stored locally in this extension.</p></div><button id="clearEvents" type="button" class="ghost">Clear log</button></div>
+       <div id="eventLog" class="event-log" aria-live="polite">No activity recorded yet.</div>
+diff --git a/developer.mjs b/developer.mjs
+index 145a843..a2b1c6e 100644
+--- a/developer.mjs
++++ b/developer.mjs
+@@ -1,5 +1,6 @@
+ import { DEMO_PLAN, validateTripPlan } from './trip-parser.mjs';
+ import {PRICE_STORAGE_KEYS} from './price-test-mode.mjs';
++import {resetPlanningSession} from './planning-reset.mjs';
+ 
+ const $ = id => document.getElementById(id);
+ const objectCount = value => value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value).length : 0;
+@@ -111,6 +112,20 @@ $('restartPriceImportTest').addEventListener('click', async () => {
+     await refresh();
+   }
+ });
++$('resetPlanningSession').addEventListener('click', async () => {
++  if (!confirm('Delete ALL saved routes, route comparisons, flight and train search results, fares, tickets, timing overrides and AI interpretation? Your trip description and bag profile will remain. This cannot be undone.')) return;
++  const button=$('resetPlanningSession');
++  button.disabled=true;
++  try {
++    await resetPlanningSession(chrome.storage.local);
++    setText('testOutput','Full planning reset completed. The traveler panel will refresh to an empty results view. Your trip description and bag are preserved; no Groq or Google Maps API requests were made.');
++  } catch(error) {
++    setText('testOutput',`Could not reset planning session: ${error.message}`);
++  } finally {
++    button.disabled=false;
++    await refresh();
++  }
++});
+ $('refresh').addEventListener('click', () => void refresh());
+ $('clearEvents').addEventListener('click', async () => {
+   await chrome.storage.local.remove('developerEvents');
+diff --git a/planning-reset.mjs b/planning-reset.mjs
+new file mode 100644
+index 0000000..9d2a981
+--- /dev/null
++++ b/planning-reset.mjs
+@@ -0,0 +1,34 @@
++// Full-session reset is intentionally separate from the price-only test reset.
++// Do not use chrome.storage.local.clear(): baggage and developer settings must survive.
++export const PLANNING_RESET_KEYS = Object.freeze([
++  'trip', 'routes', 'manualRoutes', 'offers', 'roundTripTickets',
++  'flightTimes', 'groundTimes', 'flightResearch', 'broadCache', 'trainCache',
++  'pendingFlightCapture', 'destinationCandidates', 'destinationCandidateKey',
++  'connectionCandidates', 'connectionCandidateKey', 'parsedPlan',
++  'parseWarnings', 'parseSource', 'parsedRequest', 'parseDebug',
++  'lastAiInterpretation', 'priceImportResetRequest', 'developerEvents',
++  'sessionCleared', 'planningResetRequest'
++]);
++
++export function resetTripKeepingDescription(current) {
++  const old = current && typeof current === 'object' && !Array.isArray(current) ? current : {};
++  return {
++    ...old, origin:'', preferred:'', destination:'', requestedRegion:'',
++    destinationSearch:'specified', startDate:'', endDate:'',
++    request:typeof old.request==='string' ? old.request : ''
++  };
++}
++
++export async function resetPlanningSession(storage, {requestId}={}) {
++  if(!storage || typeof storage.get!=='function' || typeof storage.remove!=='function' || typeof storage.set!=='function') {
++    throw new TypeError('Expected Chrome local storage interface.');
++  }
++  const before=await storage.get('trip');
++  const trip=resetTripKeepingDescription(before?.trip);
++  // First delete persisted planning data, then signal active side panels to
++  // reload. This prevents automatic route regeneration from stale state.
++  await storage.remove(PLANNING_RESET_KEYS);
++  await storage.set({trip,routes:[],manualRoutes:[],sessionCleared:true,
++    planningResetRequest:requestId || crypto.randomUUID()});
++  return {trip,clearedKeys:PLANNING_RESET_KEYS.length};
++}
+diff --git a/tests/planning-reset.test.mjs b/tests/planning-reset.test.mjs
+new file mode 100644
+index 0000000..b6a0893
+--- /dev/null
++++ b/tests/planning-reset.test.mjs
+@@ -0,0 +1,56 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import {readFileSync} from 'node:fs';
++import {PLANNING_RESET_KEYS,resetPlanningSession,resetTripKeepingDescription} from '../planning-reset.mjs';
++const source=file=>readFileSync(new URL(`../${file}`,import.meta.url),'utf8');
++
++function fakeStorage(seed){
++  const data={...seed};
++  return {data,
++    async get(key){return {[key]:data[key]};},
++    async remove(keys){for(const key of keys)delete data[key];},
++    async set(entries){Object.assign(data,entries);}
++  };
++}
++
++test('full reset clears route cards, flight and train results while preserving prompt, baggage and test mode',async()=>{
++  const storage=fakeStorage({
++    trip:{origin:'BCN',preferred:'SPC',destination:'MAD',startDate:'2027-01-11',endDate:'2027-01-18',request:'Barcelona to La Palma'},
++    bag:{kg:10},priceTestMode:true,routes:[{id:'first'}],manualRoutes:[{id:'manual'}],
++    trainCache:{one:{fareEur:19}},broadCache:{flight:{fareEur:30}},offers:{leg:{fare:55}},
++    roundTripTickets:{round:{totalEur:120}},flightTimes:{a:'09:00'},groundTimes:{b:'11:00'},
++    flightResearch:{a:'abc'},parsedPlan:{origin:'BCN'},lastAiInterpretation:{plan:{}},
++    destinationCandidates:[{code:'MAD'}],developerEvents:[{message:'run'}],
++    pendingFlightCapture:{text:'sample'},priceImportResetRequest:'older',miscSetting:'safe'
++  });
++  const result=await resetPlanningSession(storage,{requestId:'reset-1'});
++  assert.equal(storage.data.trip.request,'Barcelona to La Palma');
++  assert.equal(storage.data.trip.origin,'');
++  assert.equal(storage.data.trip.destination,'');
++  assert.deepEqual(storage.data.routes,[]);
++  assert.deepEqual(storage.data.manualRoutes,[]);
++  assert.equal(storage.data.sessionCleared,true);
++  assert.equal(storage.data.planningResetRequest,'reset-1');
++  for(const key of ['trainCache','broadCache','offers','roundTripTickets','flightTimes','groundTimes',
++    'flightResearch','parsedPlan','lastAiInterpretation','pendingFlightCapture','destinationCandidates',
++    'developerEvents','priceImportResetRequest'])assert.equal(key in storage.data,false,key);
++  assert.deepEqual(storage.data.bag,{kg:10});
++  assert.equal(storage.data.priceTestMode,true);
++  assert.equal(storage.data.miscSetting,'safe');
++  assert.ok(result.clearedKeys>=20);
++});
++
++test('reset prevents fallback to previous trip endpoints',()=>{
++  const fresh=resetTripKeepingDescription(null);
++  assert.equal(fresh.origin,'');assert.equal(fresh.destination,'');assert.equal(fresh.request,'');
++  const a=resetTripKeepingDescription({origin:'MAD',request:'My trip'});
++  assert.equal(a.request,'My trip');assert.equal(a.origin,'');
++});
++
++test('developer has independent full reset; side panel reloads on completion',()=>{
++  assert.match(source('developer.html'),/id="resetPlanningSession"/);
++  assert.match(source('developer.mjs'),/resetPlanningSession\(chrome\.storage\.local\)/);
++  assert.match(source('panel.mjs'),/changes\.planningResetRequest\?\.newValue/);
++  assert.match(source('panel.mjs'),/window\.location\.reload\(\)/);
++  assert.ok(PLANNING_RESET_KEYS.includes('trainCache'));
++});
+diff --git a/panel.mjs b/panel.mjs
+--- a/panel.mjs
++++ b/panel.mjs
+@@ -23,2 +23,8 @@
+ const $ = (id) => document.getElementById(id);
++// Reset listener stays independent of flight and train import event handlers.
++chrome.storage.onChanged.addListener((changes, area) => {
++  if (area !== 'local' || !changes.planningResetRequest?.newValue) return;
++  window.location.reload();
++});
++
+ const DEFAULT_TRIP = {

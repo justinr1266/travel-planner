@@ -57,20 +57,20 @@ test('repeated matching result cards are de-duplicated but different marketed fl
   const record=captureBroadSearch(capture(first,first,card('MAD','SPC','2027-01-11','11:30','13:35',87,'one_way_search_quote','Iberia Express')),job);
   assert.equal(record.options.length,2);
 });
-test('€20 train estimate plus cheapest feasible one-way flight quotes yields indicative total',()=>{
+test('unpriced train leg stays incomplete despite cached flight quotes',()=>{
   const cache={
     [researchKey(outbound)]:stored(outbound,[['07:00','10:30',65],['14:30','17:00',100],['16:40','20:30',90]]),
     [researchKey(returning)]:stored(returning,[['14:15','18:05',82]])
   };
   const result=estimateRoute(route,cache,{},{});
-  assert.equal(result.total,167); // €20 + €65 + €82; timetable unavailable, so no buffer assumed
+  assert.equal(result.total,null); // Train fare unknown; two flights contribute €147
   assert.equal(result.trainCount,1);
-  assert.equal(result.estimatedCount,3);
-  assert.equal(result.missing,0);
-  assert.equal(result.complete,true);
+  assert.equal(result.estimatedCount,2);
+  assert.equal(result.missing,1);
+  assert.equal(result.complete,false);
   assert.equal(result.selected[1].option.departureClock,'07:00'); // no ground time; do NOT invent buffer checks
   assert.equal(result.uncheckedConnections,1);
-  assert.equal(TRAIN_ESTIMATE_EUR,20);
+  assert.equal(TRAIN_ESTIMATE_EUR,null);
 });
 test('known ground timetable excludes cheap flights departing before the buffer',()=>{
   const scheduled={...ground,evidence:'gtfs_scheduled',arrivalLocal:'2027-01-11 11:00',
@@ -82,7 +82,8 @@ test('known ground timetable excludes cheap flights departing before the buffer'
   };
   const result=estimateRoute(r,cache,{}, {},{bufferMinutes:180});
   assert.equal(result.selected[1].option.departureClock,'16:40');
-  assert.equal(result.total,192);
+  assert.equal(result.total,null);
+  assert.equal(result.known,172); // €90 + €82; train fare still unknown
   assert.equal(result.uncheckedConnections,0);
   assert.equal(result.destinationHours,161.8); // arrival 20:30 Jan 11, departure 14:15 Jan 18
 });
@@ -93,7 +94,7 @@ test('all flight candidates below a verified connection buffer leave the itinera
   const cache={[researchKey(outbound)]:stored(outbound,[['07:00','10:30',65],['14:30','17:00',100]])};
   const result=estimateRoute(r,cache,{}, {},{bufferMinutes:180});
   assert.equal(result.conflicts,1);
-  assert.equal(result.missing,2);
+  assert.equal(result.missing,3);
   assert.equal(result.complete,false);
 });
 test('saved one-way fares supersede indicative quotes and linked round-trip tickets count once',()=>{
@@ -102,13 +103,17 @@ test('saved one-way fares supersede indicative quotes and linked round-trip tick
     [researchKey(returning)]:stored(returning,[['14:15','18:05',82]])
   };
   const byLeg=estimateRoute(route,cache,{[outbound.key]:{fare:150,bagFee:10,transferCost:0}},{});
-  assert.equal(byLeg.total,20+160+82);
+  assert.equal(byLeg.total,null);
+  assert.equal(byLeg.known,160+82);
   const accepted={totalEur:'123',seller:'Binter',confirmed:true,baggageVerified:true};
   const ticket=buildRoundTripTicket(accepted,outbound,returning);
   const paired=estimateRoute(route,cache,{[outbound.key]:{fare:150,bagFee:10,transferCost:0}}, {[ticket.id]:ticket});
-  assert.equal(paired.total,143);
+  assert.equal(paired.total,null);
+  assert.equal(paired.known,123);
   assert.equal(paired.verifiedCount,1);
-  assert.equal(paired.estimatedCount,1);
+  // The train is unpriced; only the linked round-trip ticket is counted.
+  assert.equal(paired.estimatedCount,0);
+  assert.equal(paired.missing,1);
   assert.equal(paired.selected[1].kind,'verified_roundtrip');
   assert.equal(paired.selected[2].costEur,0);
 });
@@ -128,9 +133,9 @@ test('complete routes rank by estimated totals and show approximate destination 
     [researchKey(direct.legs[0])]:stored(direct.legs[0],[['09:00','12:45',130]])
   };
   const choices=compareBroadRoutes([direct,route],cache,{},{});
-  assert.equal(choices[0].route.id,'train-to-island');
-  assert.equal(choices[0].total,202);
-  assert.equal(choices[0].destinationHours,168.7); // Jan 11 13:35 -> Jan 18 14:15
+  assert.equal(choices[0].route.id,'direct');
+  assert.equal(choices[0].total,212);
+  assert.equal(choices[0].destinationHours,169.5); // Jan 11 13:35 -> Jan 18 14:15
   assert.ok(choices[0].observedDurationMinutes>0);
 });
 test('cache freshness marks old quotes as stale without deleting them',()=>{

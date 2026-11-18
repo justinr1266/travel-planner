@@ -2,6 +2,7 @@ import {connectionWindows} from './connection-windows.mjs';
 import {matchingTicketsForRoute} from './roundtrip-tickets.mjs';
 // RouteWise's deterministic, testable planning core. No AI-generated prices.
 import { airportDirectory } from './location-resolver.mjs';
+import {validDatedTransitResult,routeTransferQuoteKey} from './google-ground-routes.mjs';
 export const AIRPORTS = Object.freeze(airportDirectory());
 export function airportName(code) {return AIRPORTS[code] ?? code;}
 
@@ -36,7 +37,7 @@ export function generateRoutes(trip) {
   return [{id:'generic-direct',name:'Visit '+airportName(preferred),details:'Candidate flight legs only, unverified.',legs}];
 }
 
-export function costSummary(route, offers, tickets={}) {
+export function costSummary(route, offers, tickets={}, groundQuotes={}) {
   let known = 0;
   let missing = 0;
   let pricedLegs = 0;
@@ -50,7 +51,10 @@ export function costSummary(route, offers, tickets={}) {
   for (const leg of route.legs) {
     if(covered.has(leg.key)){pricedLegs++;continue;}
     const offer = offers[leg.key];
-    if (!offer || !Number.isFinite(offer.fare)) {
+    if ((!offer || !Number.isFinite(offer.fare)) && validDatedTransitResult(leg,groundQuotes[routeTransferQuoteKey(route,leg)])) {
+      known += groundQuotes[routeTransferQuoteKey(route,leg)].fare.amount;
+      pricedLegs++;
+    } else if (!offer || !Number.isFinite(offer.fare)) {
       missing += 1;
     } else {
       known += offer.fare + (offer.bagFee || 0) + (offer.transferCost || 0);
@@ -68,8 +72,8 @@ export function costSummary(route, offers, tickets={}) {
   };
 }
 
-export function rankRoutes(routes, offers, {bufferMinutes=180,flightTimes={},groundTimes={},tickets={}}={}) {
-  return routes.map((route, index) => ({ route, summary: costSummary(route, offers, tickets), index,
+export function rankRoutes(routes, offers, {bufferMinutes=180,flightTimes={},groundTimes={},tickets={},groundQuotes={}}={}) {
+  return routes.map((route, index) => ({ route, summary: costSummary(route, offers, tickets, groundQuotes), index,
     timingConflict: connectionWindows(route, offers, {bufferMinutes,flightTimes,groundTimes}).some(w=>
       w.status==='below_buffer'||w.status==='window_next_day')}))
     .sort((a, b) => {

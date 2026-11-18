@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "RouteWise — Travel Scenario Planner",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "description": "Trip scenarios with user-reviewed flight imports and multimodal comparisons.",
   "minimum_chrome_version": "116",
   "permissions": [
@@ -17,8 +17,24 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.google.com/travel/flights*"],
-      "js": ["flights-overlay.js"],
+      "matches": [
+        "https://www.google.com/travel/flights*"
+      ],
+      "js": [
+        "flights-overlay.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.omio.com/*",
+        "https://omio.com/*",
+        "https://www.thetrainline.com/*",
+        "https://thetrainline.com/*"
+      ],
+      "js": [
+        "train-results.js"
+      ],
       "run_at": "document_idle"
     }
   ],

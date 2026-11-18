@@ -1,4 +1,6 @@
 import { AIRPORTS, airportName, rankRoutes, normalizedOffer } from './core.mjs';
+import {rankItineraryComparisons,rankingExplanation} from './itinerary-recommendations.mjs';
+import {PRICE_STORAGE_KEYS, persistableSession} from './price-test-mode.mjs';
 import { generatePlannedRoutes } from './route-engine.mjs';
 import { validateTripPlan, normalizeTripWithDiagnostics } from './trip-parser.mjs';
 import { applyPlanToForm } from './plan-ui.mjs';
@@ -16,9 +18,19 @@ import {parseGoogleFlightsPage} from './google-flights-text.mjs';
 import {roundTripQuoteChoices} from './roundtrip-quote-options.mjs';
 import {researchTasks,researchKey,captureBroadSearch,captureFromOpenedOneWaySearch,researchAge,compareBroadRoutes,TRAIN_ESTIMATE_EUR} from './broad-research.mjs';
 import {googleFlightsSearchUrl} from './search-links.mjs';
+import {runFlightImportQueue} from './research-queue.mjs';
+import {runBestRouteWorkflow} from './best-routes-workflow.mjs';
+import {trainResearchTasks,trainResearchKey,trainSearchUrl,parseTrainCapture,checkedTrainQuote,captureMatchesTrainSearch,indicativeTrainQuote} from './train-research.mjs';
+import {suggestedTransferTime,localTransitTimeToISO,validDatedTransitResult,routeTransferQuoteKey} from './google-ground-routes.mjs';
 import {ticketKey,pairedFlightLegs,pairContainingLeg,matchingTicketSelection,matchingTicketsForRoute,ticketsUsingLeg,replaceTicketsForPair,buildRoundTripTicket} from './roundtrip-tickets.mjs';
 
 const $ = (id) => document.getElementById(id);
+// Reset listener stays independent of flight and train import event handlers.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.planningResetRequest?.newValue) return;
+  window.location.reload();
+});
+
 const DEFAULT_TRIP = {
   origin:'BCN', preferred:'SPC', destination:'MAD', requestedRegion:'Canary Islands', destinationSearch:'specified',
   startDate:'2027-02-02', endDate:'2027-02-10',
@@ -32,8 +44,19 @@ let offers = {};
 let roundTripTickets = {}; // One combined EUR booking covers two opposite flight legs
 let flightTimes = {}; // Saved departure times without requiring a fare
 let groundTimes = {}; // Ground arrivals from a user-checked timetable, without requiring a fare
+let groundQuotes = {}; // Google transit responses are ephemeral; never stored in Chrome local storage.
+const GOOGLE_ROUTES_ENABLED=false; // Temporary: never call billable Routes API.
+let trainCache = {}; // User-checked, indicative rail-search quotes, not booked tickets.
+let trainCapture = null;
+let trainTaskKey = null;
+let trainResearchTabId = null;
+let trainImportBusy = false;
+let trainBatchBusy = false;
+let trainBatchStop = false;
+let groundLookupBusy = false;
 let flightResearch = {}; // User-reviewed flight metadata, keyed to an exact flight leg
 let broadCache = {}; // Indicative one-way Best-tab results, never checked fares
+let priceTestMode = false; // Developer-only: discard prices across panel reloads and extension updates.
 let activeResearchKey = null; // Explicit user-selected search task
 let pendingFlightCapture = null; // Selection sent via explicit browser context-menu action
 let importLegKey = null;
@@ -109,7 +132,77 @@ function getFormTrip() {
   for (const key of Object.keys(DEFAULT_TRIP)) result[key] = $(key).value;
   return result;
 }
-async function persist() { await chrome.storage.local.set({trip,bag,offers,roundTripTickets,flightTimes,groundTimes,flightResearch,broadCache,routes,manualRoutes,destinationCandidates,destinationCandidateKey,connectionCandidates,connectionCandidateKey,parsedPlan,parseWarnings,parseSource,parsedRequest,parseDebug,sessionCleared,lastAiInterpretation}); }
+function clearPriceImportSessionState() {
+  offers = {};
+  roundTripTickets = {};
+  flightResearch = {};
+  broadCache = {};
+  trainCache = {};
+  trainCapture = null; trainTaskKey = null; trainResearchTabId = null;
+  flightTimes = {}; // Imported and manually checked flight times must not leak between tests.
+  groundQuotes={}; // Transit estimates must not leak between price-import tests.
+  pendingFlightCapture = null;
+  lastSavedFareKey = null;
+  lastSavedTicketKeys = [];
+}
+let priceTestResetInProgress = false;
+// Start at the same point as a freshly generated trip, just before importing
+// its first flight. Do not alter trip, route candidates, baggage or AI caches.
+async function restartPriceImportTest() {
+  if (!priceTestMode || priceTestResetInProgress) return;
+  priceTestResetInProgress = true;
+  try {
+    const importing = () =>
+      (typeof broadImportBusy !== 'undefined' && broadImportBusy) ||
+      (typeof broadBatchRunning !== 'undefined' && broadBatchRunning) ||
+      (typeof workflowRunning !== 'undefined' && workflowRunning);
+    if (importing()) {
+      // A completed in-flight import must not refill the cleared cache.
+      if (typeof broadBatchCancelRequested !== 'undefined') broadBatchCancelRequested = true;
+      status('Stopping the active flight import before restarting the price test...');
+      for (let attempt = 0; importing() && attempt < 110; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      if (importing()) throw new Error('A flight import is still active. Close that search or retry the reset after it finishes.');
+    }
+    clearPriceImportSessionState();
+    activeResearchKey = null;
+    importLegKey = null;
+    ticketEditorPair = null;
+    ticketEditorRaw = '';
+    ticketEditorQuoteOptions = [];
+    currentKey = null;
+    $('flightImport').hidden = true;
+    $('ticketEditor').hidden = true;
+    $('editor').hidden = true;
+    $('broadCaptureArea').hidden = true;
+    $('broadConfirmOneWay').checked = false;
+    $('broadBatchProgress') && ($('broadBatchProgress').textContent = '');
+    $('workflowStatus') && ($('workflowStatus').textContent = '');
+    $('priceSaveNotice').hidden = true;
+    $('priceSaveNotice').textContent = '';
+    $('broadCaptureStatus').textContent = '';
+    // The extension is reset; open Google Flights tabs are left alone.
+    await chrome.storage.local.remove(PRICE_STORAGE_KEYS);
+    await chrome.storage.local.remove('trainCache');
+    showCaptureNotice();
+    render();
+    const count = broadTasks().length;
+    status(count
+      ? `Price import test restarted. ${count} unique flight search(es) are ready to import from the first leg. No Groq request made.`
+      : 'Price import test restarted. Generate candidate routes first; no Groq request was made by the reset.');
+  } catch (error) {
+    status(`Could not restart price import test: ${error.message}`);
+  } finally {
+    priceTestResetInProgress = false;
+  }
+}
+async function persist() {
+  const session = {trip,bag,offers,roundTripTickets,flightTimes,groundTimes,flightResearch,broadCache,routes,manualRoutes,destinationCandidates,destinationCandidateKey,connectionCandidates,connectionCandidateKey,parsedPlan,parseWarnings,parseSource,parsedRequest,parseDebug,sessionCleared,lastAiInterpretation};
+  await chrome.storage.local.set(persistableSession(session, {priceTestMode}));
+  if(priceTestMode)await chrome.storage.local.remove('trainCache');
+  else await chrome.storage.local.set({trainCache});
+}
 function formatWindow(from, to, fixed) {
   if (!from && !to) return 'Not specified';
   if (from && to && from === to) return `${from}${fixed?' (fixed)':''}`;
@@ -183,6 +276,8 @@ async function setParsedPlan(raw,source,sourceText=$('request').value.trim(),deb
   await persist();
 }
 $('interpret').addEventListener('click', async()=>{
+  if(broadBatchRunning || broadImportBusy){status('Finish importing flight searches before changing your trip.');return;}
+  if(workflowRunning){status('Finish searching routes before changing your trip.');return;}
   const description = $('request').value.trim();
   if (!description) { status('Describe your trip first.'); return; }
   $('interpret').disabled = true;
@@ -288,10 +383,11 @@ function connectionCardHtml(window,leg) {
   </section>`;
 }
 function render() {
-  const ranked = rankRoutes(visibleRoutes(), offers,{bufferMinutes:Number(trip.connectionBuffer)||180,flightTimes,groundTimes,tickets:roundTripTickets});
+  const ranked = rankRoutes(visibleRoutes(), offers,{bufferMinutes:Number(trip.connectionBuffer)||180,flightTimes,groundTimes,tickets:roundTripTickets,groundQuotes});
   $('bufferSummary').textContent=connectionOverview(ranked.map(x=>x.route),offers,{bufferMinutes:Number(trip.connectionBuffer)||180,flightTimes,groundTimes});
   $('routeCount').textContent = String(ranked.length);
   renderBroadResearch();
+  renderTrainResearch();
   $('routes').innerHTML = ranked.map(({route,summary},i) => {
     const roundTripPairs = new Map(findRoundTripPairs(route.legs).map(pair => [pair.outboundIndex, pair.returnIndex]));
     const totalLabel = summary.complete ? money(summary.total) : summary.pricedLegs ? `${money(summary.known)}+` : `${summary.pricedLegs}/${route.legs.length}`;
@@ -310,8 +406,27 @@ function render() {
       const offer = offers[leg.key];
       const ticketMatch=ticketByIndex.get(legIndex);
       const shared=ticketMatch?.ticket;
+      const localQuote = groundQuotes[routeTransferQuoteKey(route,leg)];
+      const googleFare = GOOGLE_ROUTES_ENABLED && validDatedTransitResult(leg,localQuote) ? localQuote.fare.amount : null;
+      const transferIndex = legIndex;
+      const timeHint = suggestedTransferTime(route,transferIndex);
+      const transferWidget=GOOGLE_ROUTES_ENABLED && leg.mode==='transfer' ? `<details class="ground-research"><summary>Research local transit with Google Maps</summary>
+        <form data-google-ground="${escapeHtml(leg.key)}" data-google-ground-route="${escapeHtml(route.id)}">
+          <label>Time to plan for <input name="localTime" type="datetime-local" value="${escapeHtml(timeHint?.localTime||'')}" required /></label>
+          <label>Time zone <input name="timeZone" value="${escapeHtml(timeHint?.timeZone||'')}" placeholder="Europe/Madrid" required /></label>
+          <label>Search for <select name="timeKind"><option value="departure" ${timeHint?.timeKind==='departure'?'selected':''}>Depart at</option><option value="arrival" ${timeHint?.timeKind==='arrival'?'selected':''}>Arrive by</option></select></label>
+          <p class="helper">${escapeHtml(timeHint?.note||'')}. Google may not provide the fare.</p>
+          <button class="secondary" type="submit">Find transit options</button>
+        </form>
+        ${localQuote ? `<p class="helper">© Google Maps · ${localQuote.found?`Duration: ${localQuote.routes[0]?.durationMinutes??'?'} min · ${localQuote.fare?`${escapeHtml(localQuote.fare.currencyCode)} ${localQuote.fare.amount.toFixed(2)} (estimate)`:'Fare unavailable'}`:'No transit route returned'}${googleFare===null?' · Not included in trip total':''}. Check the actual stop and date.</p>
+        ${localQuote.routes?.[0]?.transit?.length ? `<p class="helper">${localQuote.routes[0].transit.map(step=>`${escapeHtml(step.line||step.mode)}: ${escapeHtml(step.from)} → ${escapeHtml(step.to)}`).join(' · ')}</p>`:''}
+        <a class="link" target="_blank" rel="noopener noreferrer" href="https://www.google.com/maps/dir/?api=1&amp;origin=${encodeURIComponent(leg.fromKind==='airport'?airportName(leg.from):(leg.fromLabel||leg.from))}&amp;destination=${encodeURIComponent(leg.toKind==='airport'?airportName(leg.to):(leg.toLabel||leg.to))}&amp;travelmode=transit">Review in Google Maps ↗</a>
+        ${localQuote.fare?.currencyCode==='EUR' && !localQuote.acceptedForComparison && localQuote.requestedDate===leg.date ? `<button class="secondary" type="button" data-accept-ground="${escapeHtml(leg.key)}" data-accept-ground-route="${escapeHtml(route.id)}">Use this estimated fare in comparison</button>`:''}`:''}
+      </details>` : '';
       const cost=shared ? `<div class="leg-pricing ticket-covered">${ticketMatch.position==='outbound'?`${money(shared.totalEur)} · linked round-trip ticket`:'Covered by linked round-trip ticket'}<div class="ticket-link">${escapeHtml(shared.seller)} · covers ${escapeHtml(shared.outbound.date)} and ${escapeHtml(shared.returning.date)}</div></div>`
-        :offer?`<div class="leg-pricing">${money(offer.fare + offer.bagFee + offer.transferCost)}</div>`:'<span class="tag">Unpriced</span>';
+        :offer?`<div class="leg-pricing">${money(offer.fare + offer.bagFee + offer.transferCost)}</div>`:
+         googleFare!==null?`<div class="leg-pricing">${money(googleFare)} · Google transit estimate</div>`:'<span class="tag">Unpriced</span>';
+      const trainHint=leg.mode==='train'&&!offer?indicativeTrainQuote(trainCache,leg):null;
       const research=flightResearch[leg.key];
       const sourceUrl=shared?.sourceUrl || offer?.source || research?.sourceUrl || '';
       const source=sourceUrl ? `<a class="link" target="_blank" rel="noopener noreferrer" href="${escapeHtml(sourceUrl)}">Reviewed source ↗</a>` : '';
@@ -322,17 +437,19 @@ function render() {
         `<button class="secondary" data-roundtrip-route="${escapeHtml(route.id)}" data-roundtrip-index="${legIndex}" title="Search ${escapeHtml(leg.from)} to ${escapeHtml(leg.to)} on ${escapeHtml(leg.date)} and return ${escapeHtml(route.legs[returnIndex].date)}">Round trip ↗</button>`;
       const ticketButton=returnIndex===undefined?'':`<button class="secondary" data-price-roundtrip-route="${escapeHtml(route.id)}" data-price-roundtrip-index="${legIndex}">${shared?'Edit linked ticket €':'Price as round trip €'}</button>`;
       const returnNote = returnIndex === undefined ? '' : `<div class="leg-meta">Return: ${dateDisplay(route.legs[returnIndex].date)} · ${escapeHtml(airportName(leg.to))} → ${escapeHtml(airportName(leg.from))}</div>`;
+      const trainQuoteNote=trainHint?`<div class="leg-meta">Indicative train quote ${money(trainHint.fareEur)} · research only, not a checked booking price</div>`:'';
       const flightTimeNote=leg.mode==='flight' && !windowsByFlight.has(legIndex) && offer?.departureClock
         ? `<div class="leg-meta">Saved departure: ${escapeHtml(offer.departureClock)} (${escapeHtml(offer.departureTimezone||'time zone unspecified')})</div>`:'';
       const check=windowsByFlight.get(legIndex);
       return `${check?connectionCardHtml(check,leg):''}<div class="leg${lastSavedFareKey===leg.key||lastSavedTicketKeys.includes(leg.key)?' leg-updated':''}" data-leg-key="${escapeHtml(leg.key)}">
         <div><div class="leg-title">${escapeHtml(placeName(leg.from))} → ${escapeHtml(placeName(leg.to))}</div>
-        <div class="leg-meta">${dateDisplay(leg.date)} · ${escapeHtml(modeLabel(leg.mode))}${leg.evidence==='gtfs_scheduled'?' · GTFS scheduled (ground leg only)':leg.evidence==='gtfs_trip_pattern'?' · GTFS trip pattern (date unverified)':leg.evidence==='transfer_needed'?' · transfer required (unverified)':''}${leg.fromKind && leg.mode !== 'flight' && !leg.evidence ? ' · user-entered terminal' : ''}</div>${leg.evidence==='gtfs_scheduled'?`<div class="leg-meta">${escapeHtml(leg.departureLocal)} → ${escapeHtml(leg.arrivalLocal)} (${escapeHtml(leg.scheduleTimezone||'feed-local')})</div>`:''}${returnNote}${flightTimeNote}${cost}${researchNote}${source}</div>
+        <div class="leg-meta">${dateDisplay(leg.date)} · ${escapeHtml(modeLabel(leg.mode))}${leg.evidence==='gtfs_scheduled'?' · GTFS scheduled (ground leg only)':leg.evidence==='gtfs_trip_pattern'?' · GTFS trip pattern (date unverified)':leg.evidence==='transfer_needed'?' · transfer required (unverified)':''}${leg.fromKind && leg.mode !== 'flight' && !leg.evidence ? ' · user-entered terminal' : ''}</div>${leg.evidence==='gtfs_scheduled'?`<div class="leg-meta">${escapeHtml(leg.departureLocal)} → ${escapeHtml(leg.arrivalLocal)} (${escapeHtml(leg.scheduleTimezone||'feed-local')})</div>`:''}${returnNote}${flightTimeNote}${trainQuoteNote}${cost}${researchNote}${source}</div>
         <div class="leg-actions">
           <button class="secondary" data-search="${escapeHtml(leg.key)}">${leg.mode === 'flight' ? 'One way ↗' : leg.mode === 'transfer' ? 'Directions ↗' : `Find ${escapeHtml(leg.mode)} ↗`}</button>${roundTripButton}${ticketButton}
           ${leg.mode==='flight'?`<button class="ghost" data-import-flight="${escapeHtml(leg.key)}">Import flight</button>`:''}
+          ${leg.mode==='train'?`<button class="ghost" data-import-train="${escapeHtml(leg.key)}">Import train</button>`:''}
           <button class="ghost" data-edit="${escapeHtml(leg.key)}">${shared?'Ticket €':offer?'Edit':'Add'} €</button>
-        </div></div>`;
+        </div>${transferWidget}</div>`;
     }).join('');
     const dests = [route.legs[0].from,...route.legs.map(l=>l.to)].map(placeName).join(' → ');
     return `<article class="route ${summary.complete?'route-complete':''}">
@@ -345,14 +462,229 @@ function render() {
       <div class="route-body"><div class="route-dest">${escapeHtml(dests)}</div>${stayText}${legs}</div></article>`;
   }).join('');
 }
+// Independent rail research workflow. Prices from result cards remain indicative
+// until a traveler confirms the exact one-way itinerary and ticket conditions.
+function trainTasks(){return trainResearchTasks(visibleRoutes());}
+function trainPanel(){
+  let panel=$('trainResearch');
+  if(panel)return panel;
+  panel=document.createElement('section');
+  panel.id='trainResearch';panel.className='card broad-research';
+  $('broadResearch').insertAdjacentElement('afterend',panel);
+  panel.addEventListener('click',async event=>{
+    if(event.target.closest('#trainImportAll')){await importAllTrains();return;}
+    if(event.target.closest('#trainBatchStop')){trainBatchStop=true;status('Stopping train import after the active search.');return;}
+    const open=event.target.closest('[data-train-open]');
+    const capture=event.target.closest('[data-train-capture]');
+    const clear=event.target.closest('[data-train-clear]');
+    if(open){const task=trainTasks().find(t=>t.key===open.dataset.trainOpen);if(task)await openAndImportTrain(task);}
+    if(capture){const task=trainTasks().find(t=>t.key===capture.dataset.trainCapture);if(task)openTrainImport(task.key);}
+    if(clear){delete trainCache[clear.dataset.trainClear];await persist();render();status('Indicative train quote cleared.');}
+  });
+  return panel;
+}
+function trainEditor(){
+  let editor=$('trainImport');
+  if(editor)return editor;
+  editor=document.createElement('section');
+  editor.id='trainImport';editor.className='card offer-editor';editor.hidden=true;
+  editor.innerHTML=`<div class="editor-title"><h2>Import a train search</h2><button class="ghost" id="trainImportClose" type="button">Close</button></div>
+    <p id="trainImportLeg" class="helper"></p>
+    <p class="helper">Search results are not verified booking prices. Check the correct stations, travel date, one-way trip, operator, passenger count and ticket conditions before importing.</p>
+    <div class="import-actions"><button class="secondary" id="trainImportOpen" type="button">Open train search ↗</button><button class="secondary" id="trainImportCapture" type="button">Capture visible train results</button></div>
+    <p id="trainImportStatus" class="helper" role="status"></p>
+    <label for="trainImportSource">Train search URL</label><input id="trainImportSource" type="url" placeholder="https://www.omio.com/…" />
+    <label for="trainImportText">Or paste one train journey result (for manual review)</label><textarea id="trainImportText" rows="4" placeholder="e.g. 08:00 → 10:45 · Barcelona Sants → Madrid Atocha · €45.90"></textarea>
+    <button id="trainImportParse" class="secondary" type="button">Analyze pasted train result</button>
+    <label for="trainImportChoice">Captured EUR-priced journey</label><select id="trainImportChoice"></select>
+    <label for="trainImportFare">Fare to save (€)</label><input id="trainImportFare" type="number" min="0.01" max="5000" step="0.01" />
+    <label class="import-confirm"><input id="trainImportConfirmed" type="checkbox"/> I checked this one-way train's actual departure and arrival stations, travel date, EUR fare, passenger count and fare conditions on the provider page.</label>
+    <div class="import-actions"><button class="secondary" id="trainCacheSave" type="button">Cache indicative train quote</button><button class="primary" id="trainFareSave" type="button">Save checked train fare</button></div>`;
+  $('trainResearch').insertAdjacentElement('afterend',editor);
+  $('trainImportClose').addEventListener('click',()=>{editor.hidden=true;});
+  $('trainImportOpen').addEventListener('click',()=>{const task=trainTasks().find(t=>t.key===trainTaskKey);if(task)void openAndImportTrain(task);});
+  $('trainImportCapture').addEventListener('click',()=>{void captureTrainTab();});
+  $('trainImportParse').addEventListener('click',()=>{
+    const task=trainTasks().find(t=>t.key===trainTaskKey);if(!task)return;
+    trainCapture={sourceUrl:$('trainImportSource').value,cards:[$('trainImportText').value]};
+    displayTrainCapture(task,trainCapture);
+  });
+  $('trainImportChoice').addEventListener('change',()=>{
+    const task=trainTasks().find(t=>t.key===trainTaskKey);if(!task||!trainCapture)return;
+    try{$('trainImportFare').value=parseTrainCapture(trainCapture,task).options[Number($('trainImportChoice').value)]?.fareEur??'';}
+    catch{$('trainImportFare').value='';}
+  });
+  async function saveTrain({checked}){
+    const task=trainTasks().find(t=>t.key===trainTaskKey);
+    if(!task)return;
+    try{
+      if(!$('trainImportConfirmed').checked)throw new Error('Check the provider page and confirm the exact one-way train search first.');
+      const amount=Number($('trainImportFare').value);
+      if(!Number.isFinite(amount)||amount<=0||amount>5000)throw new Error('Enter a valid EUR train fare.');
+      const sourceUrl=$('trainImportSource').value.trim();
+      const parsed=trainCapture ? parseTrainCapture({...trainCapture,sourceUrl},task):null;
+      if(!parsed?.sourceUrl)throw new Error('Use the original Omio/Trainline source URL.');
+      const option=parsed.options.find(x=>x.fareEur===Math.round(amount*100)/100);
+      if(!option)throw new Error('This price must match a captured train journey card. Re-capture or paste that card.');
+      if(checked){
+        // Save the reviewed fare for every identical station/date train leg.
+        // GTFS feed IDs can differ even when the operator search is identical.
+        let count=0;
+        for(const leg of visibleRoutes().flatMap(route=>route.legs||[])){
+          if(trainResearchKey(leg)!==task.key)continue;
+          offers[leg.key]=normalizedOffer({fare:amount,bagFee:0,transferCost:0,
+            source:parsed.sourceUrl,note:`User-reviewed one-way train quote; confirm operator, seat and luggage terms. ${option.departureClock||''}`});
+          count++;
+        }
+        await persist();render();editor.hidden=true;
+        status(`Saved checked ${money(amount)} train fare for ${task.from} → ${task.to} (${task.date}) across ${count} matching leg(s).`);
+      }else{
+        trainCache[task.key]={...parsed,selected:{...option},quoteStatus:'indicative'};
+        await persist();render();
+        status(`Cached indicative ${money(amount)} train quote for ${task.from} → ${task.to}. Verified fares unchanged.`);
+      }
+    }catch(error){$('trainImportStatus').textContent=`Could not save: ${error.message}`;}
+  }
+  $('trainCacheSave').addEventListener('click',()=>{void saveTrain({checked:false});});
+  $('trainFareSave').addEventListener('click',()=>{void saveTrain({checked:true});});
+  return editor;
+}
+function renderTrainResearch(){
+  const panel=trainPanel(),tasks=trainTasks();
+  panel.hidden=!tasks.length;
+  if(!tasks.length)return;
+  panel.innerHTML=`<div class="broad-title"><h3>05 · Train research</h3><span class="tag">User-reviewed</span></div>
+    <p class="helper">Open a dated Omio train search, inspect the actual results, then import its visible EUR prices. Cached quotes are indicative; only a separately checked fare counts as a recorded price. Google Routes API calls are paused.</p>
+    <p class="helper">${tasks.length} unique station-to-station search(es) · ${tasks.filter(t=>trainCache[t.key]).length} indicative quotes cached</p>
+    <div class="import-actions"><button id="trainImportAll" class="primary" type="button" ${trainImportBusy||trainBatchBusy?'disabled':''}>Import all missing train searches ↗</button>${trainBatchBusy?'<button id="trainBatchStop" class="secondary" type="button">Stop after current</button>':''}</div>
+    <div class="broad-searches">${tasks.map(task=>{
+      const quote=indicativeTrainQuote(trainCache,task.leg);
+      return `<div class="broad-task"><div><strong>${escapeHtml(task.from)} → ${escapeHtml(task.to)} · ${escapeHtml(task.date)}</strong>
+      <small>${quote?`${money(quote.fareEur)} indicative · ${escapeHtml(quote.capturedAt)}`:'Not researched'} · used by ${task.routeCount} itinerary(ies)</small></div>
+      <div><button class="secondary" data-train-open="${escapeHtml(task.key)}">Open and import ↗</button>
+      <button class="ghost" data-train-capture="${escapeHtml(task.key)}">Review/import</button>
+      ${quote?`<button class="ghost" data-train-clear="${escapeHtml(task.key)}">Clear</button>`:''}</div></div>`;
+    }).join('')}</div>`;
+  trainEditor();
+}
+function openTrainImport(key){
+  const task=trainTasks().find(t=>t.key===key);
+  if(!task){status('No matching train leg exists in the current itineraries.');return;}
+  const editor=trainEditor();
+  if(trainTaskKey!==key){trainCapture=null;trainResearchTabId=null;}
+  trainTaskKey=key;
+  editor.hidden=false;
+  $('trainImportLeg').textContent=`${task.from} → ${task.to} · ${task.date}`;
+  $('trainImportSource').value=trainCapture?.sourceUrl || trainSearchUrl(task);
+  $('trainImportStatus').textContent='Open the prefilled train search. Check the results, then capture the visible journey cards or paste one card.';
+  $('trainImportConfirmed').checked=false;
+  if(trainCapture)displayTrainCapture(task,trainCapture);
+  else{$('trainImportChoice').replaceChildren(new Option('No priced journey captured',''));$('trainImportFare').value='';}
+  editor.scrollIntoView({behavior:'smooth',block:'start'});
+}
+function displayTrainCapture(task,capture){
+  trainCapture=capture;
+  try{
+    const parsed=parseTrainCapture(capture,task);
+    $('trainImportSource').value=parsed.sourceUrl;
+    const select=$('trainImportChoice');select.replaceChildren();
+    parsed.options.forEach((o,i)=>select.add(new Option(`${money(o.fareEur)} · ${o.departureClock||'time unknown'} → ${o.arrivalClock||'time unknown'}${o.operator?' · '+o.operator:''}${o.changes?' · '+o.changes:''}${o.toStation?' · '+o.toStation:''}`,String(i))));
+    if(parsed.options.length){select.value='0';$('trainImportFare').value=parsed.options[0].fareEur;}
+    else{$('trainImportFare').value='';select.add(new Option('No EUR-priced journey cards found',''));}
+    $('trainImportConfirmed').checked=false;
+    $('trainImportStatus').textContent=parsed.options.length
+      ? `Found ${parsed.options.length} ${parsed.journeyCardsSeen?'exact-station matching':'possible'} EUR-priced train journey(s)${parsed.excludedStationMismatch?`; excluded ${parsed.excludedStationMismatch} journey(s) to different stations`:''}. Confirm date, passenger, seat and fare conditions before saving.`
+      : parsed.excludedStationMismatch
+        ? `No journeys match the requested stations. Excluded ${parsed.excludedStationMismatch} result(s) arriving at or departing from a different station.`
+        : 'No recognizable EUR train journey cards. Complete the search on the provider page, capture again, or paste one journey card.';
+  }catch(error){$('trainImportStatus').textContent=error.message;}
+}
+async function captureTrainTab(){
+  const task=trainTasks().find(t=>t.key===trainTaskKey);
+  if(!task)return;
+  let tabId=trainResearchTabId;
+  if(!Number.isInteger(tabId)){
+    const tabs=await chrome.tabs.query({active:true,currentWindow:true});tabId=tabs[0]?.id;
+  }
+  if(!Number.isInteger(tabId)){status('Open a train result tab first.');return;}
+  try{
+    const reply=await chrome.tabs.sendMessage(tabId,{type:'routewise:capture-train-results'});
+    if(!reply?.ok)throw new Error('Train page did not respond.');
+    displayTrainCapture(task,reply);
+  }catch(error){$('trainImportStatus').textContent='Train results are not ready. Finish loading the Omio results page, then click Capture visible train results. You can also paste a single journey card.';}
+}
+async function openAndImportTrain(task){
+  if(trainImportBusy)return;
+  trainImportBusy=true;
+  openTrainImport(task.key);
+  try{
+    const tab=await chrome.tabs.create({url:trainSearchUrl(task)});
+    if(!Number.isInteger(tab?.id))throw new Error('Chrome did not open the train search tab.');
+    trainResearchTabId=tab.id;
+    $('trainImportStatus').textContent='Loading train search; if asked, choose train-only, exact stations and the departure date.';
+    for(let attempt=0;attempt<15;attempt++){
+      await new Promise(resolve=>setTimeout(resolve,900));
+      let reply;
+      try{reply=await chrome.tabs.sendMessage(tab.id,{type:'routewise:capture-train-results'});}
+      catch{continue;}
+      if(reply?.ok && reply.cardSource==='omio_result_cards' && reply.journeys?.length && !parseTrainCapture(reply,task).options.length){
+        displayTrainCapture(task,reply);
+        status('Omio returned train journeys, but none match the requested station pair. No fare was saved.');
+        return {ok:false,tabId:tab.id,error:'Different stations'};
+      }
+      if(reply?.ok && parseTrainCapture(reply,task).options.length){
+        displayTrainCapture(task,reply);
+        if(captureMatchesTrainSearch(reply,task) && reply.cardSource==='omio_result_cards'){
+          const parsed=parseTrainCapture(reply,task);
+          const timed=parsed.options.filter(option=>option.stationMatch && option.departureClock&&option.arrivalClock);
+          if(!timed.length){status('Train cards lack explicit departure and arrival times. Review the results before caching.');return {ok:false,tabId:tab.id,error:'Times need review'};}
+          trainCache[task.key]={...parsed,selected:timed[0],quoteStatus:'indicative'};
+          await persist();render();
+          status(`Auto-cached indicative ${money(timed[0].fareEur)} train quote for ${task.from} → ${task.to}. Review actual fare before booking.`);
+          return {ok:true,tabId:tab.id};
+        }
+        status(`Captured potential train prices for ${task.from} → ${task.to}, but the provider changed the URL. Review the itinerary/date and confirm before saving.`);
+        return {ok:false,tabId:tab.id,error:'Provider search page needs review'};
+      }
+    }
+    $('trainImportStatus').textContent='No train results could be read automatically yet. Complete the search in the opened tab, then use Capture visible train results. No fare was saved.';
+    return {ok:false,tabId:tab.id,error:'No readable train results yet'};
+  }catch(error){$('trainImportStatus').textContent=`Train search: ${error.message}`;return {ok:false,error:error.message};}
+  finally{trainImportBusy=false;renderTrainResearch();}
+}
+async function importAllTrains({fromWorkflow=false}={}){
+  if(trainBatchBusy||trainImportBusy||(workflowRunning&&!fromWorkflow))return null;
+  trainBatchBusy=true;trainBatchStop=false;renderTrainResearch();
+  let success=0,needsReview=0;
+  try{
+    for(const task of trainTasks().filter(t=>!trainCache[t.key])){
+      if(trainBatchStop)break;
+      status(`Researching train ${task.from} → ${task.to} on ${task.date}...`);
+      const result=await openAndImportTrain(task);
+      if(result?.ok)success++;else needsReview++;
+    }
+    const summary=`${success} train search(es) cached as indicative; ${needsReview} need review${trainBatchStop?' (stopped early)':''}. No unchecked train fares were recorded.`;
+    status(summary);
+    if(fromWorkflow)$('workflowStatus').textContent=summary;
+    return {success,needsReview,summary};
+  }finally{trainBatchBusy=false;trainBatchStop=false;renderTrainResearch();}
+}
+
+
 function broadTasks(){return researchTasks(visibleRoutes());}
 function renderBroadResearch(){
   const tasks=broadTasks();
   const pending=tasks.filter(task=>!broadCache[task.key]);
   const matched=tasks.filter(task=>broadCache[task.key]);
   const rows=compareBroadRoutes(visibleRoutes(),broadCache,offers,roundTripTickets,
-    {bufferMinutes:Number(trip.connectionBuffer)||180,groundTimes});
-  $('broadStats').textContent=`${tasks.length} unique one-way searches · ${matched.length} cached · ${pending.length} pending · train estimate ${money(TRAIN_ESTIMATE_EUR)}/leg`;
+    {bufferMinutes:Number(trip.connectionBuffer)||180,groundTimes,groundQuotes:{},trainCache});
+  const importing=broadImportBusy || broadBatchRunning || workflowRunning;
+  $('broadImportAll').disabled=importing || pending.length===0;
+  $('broadOpenNext').disabled=importing || pending.length===0;
+  $('showGoogleFlightsOverlay').disabled=importing;
+  $('broadStopImport').hidden=!broadBatchRunning;
+  $('broadStopImport').disabled=broadBatchCancelRequested;
+  $('broadStats').textContent=`${tasks.length} unique one-way flight searches · ${matched.length} cached · ${pending.length} pending · ${trainResearchTasks(visibleRoutes()).length} unique train search(es) below`;
   $('broadSearches').innerHTML=tasks.length?tasks.map(task=>{
     const record=broadCache[task.key];
     const statusText=record?`${record.options.length} options · ${researchAge(record)==='stale'?'older than 24h':'cached'}`:'Needs research';
@@ -377,17 +709,23 @@ function renderBroadResearch(){
   if(pendingFlightCapture?.text){
     const count=Number(pendingFlightCapture.captureCount)||1;
     $('broadCaptureStatus').textContent=`${count} captured card(s). ${choices.length?'Choose the matching one-way search and save its indicative results (or results from a RouteWise-opened one-way search are cached automatically).':'No candidate flight search matches the captured airports/date.'}`;
-    $('broadCaptureSave').disabled=!choices.length;
+    $('broadCaptureSave').disabled=importing || !choices.length;
   }
-  const shown=rows.slice(0,5);
+  // Compare complete, non-conflicting options before partial subtotals.
+  // Honor the traveler's selected planning priority without inventing total journey time.
+  const shown=rankItineraryComparisons(rows,trip.goal).slice(0,5);
   $('broadComparison').innerHTML=shown.map((r,index)=>{
     const subtotal=r.total===null?`${money(r.known)}+` :money(r.total);
+    const assessment=r.assessment;
+    const explanation=rankingExplanation(trip.goal,assessment);
     const flag=r.missing?`${r.missing} unpriced leg(s)` :r.conflicts?`${r.conflicts} blocked connection(s)`:
       r.uncheckedConnections?`${r.uncheckedConnections} connection(s) to check`:'No known ground-buffer conflict';
-    const preview=r.selected.filter(x=>x.kind==='flight_estimate').map(x=>
-      `${x.leg.from}–${x.leg.to} ${x.option.departureClock} ${money(x.costEur)}`).join(' · ');
+    const preview=r.selected.filter(x=>['flight_estimate','train_estimate'].includes(x.kind)).map(x=>
+      `${x.leg.mode==='train'?(x.leg.fromLabel||x.leg.from)+'–'+(x.leg.toLabel||x.leg.to):x.leg.from+'–'+x.leg.to} ${x.option?.departureClock||''} ${money(x.costEur)}`).join(' · ');
     return `<div class="broad-route"><div class="broad-route-head"><strong>${index+1}. ${escapeHtml(r.route.name)}</strong><strong>${escapeHtml(subtotal)}</strong></div>
-    <div class="helper">${escapeHtml(r.complete?'Complete indicative estimate':'Incomplete estimate')} · ${escapeHtml(flag)} · ${r.trainCount} train(s) at €20</div>
+    <div class="helper"><strong>${escapeHtml(assessment.label)}</strong> · ${escapeHtml(flag)} · ${r.trainCount} train leg(s), no assumed fares</div>
+    <div class="helper">${escapeHtml(explanation)}</div>
+    ${assessment.flags.length?`<details class="recommendation-caveats"><summary>What still needs checking</summary><ul>${assessment.flags.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul></details>`:''}
     ${r.destinationHours!==null?`<div class="helper">Approx. ${r.destinationHours} hours at ${escapeHtml(r.route.primaryStay?.destination||'destination')} based on imported flight times</div>`:''}
     ${r.observedDurationMinutes?`<div class="helper">Known scheduled flight time: ${Math.floor(r.observedDurationMinutes/60)}h ${r.observedDurationMinutes%60}m${r.unknownDurations?` · ${r.unknownDurations} unknown duration(s)`: ''} (excludes waits and transfers)</div>`:''}
     ${r.selected.some(s=>s.cacheAge==='stale')?'<div class="helper">Some flight quotes are older than 24 hours; refresh before deciding.</div>':''}
@@ -398,62 +736,208 @@ function renderBroadResearch(){
     `All ${tasks.length} unique flight searches have cached results. Search quotes are preliminary; confirm finalist tickets and baggage.`;
 }
 
-// Open the task once, then ask its already-installed Google Flights content
-// script for visible flight cards. The onChanged listener performs validation
-// and caches estimates; it never writes verified fares.
+// Import a single dated one-way search. Batch mode reuses a successful tab,
+// waits for the exact capture to be validated and cached, and only then advances.
+// Google Flights can change its markup; failures remain available for review.
 let broadImportBusy = false;
-async function openAndImportResearch(task) {
-  if (broadImportBusy) return;
+let workflowRunning = false;
+let broadBatchRunning = false;
+let broadBatchCancelRequested = false;
+async function openAndImportResearch(task,{reuseTabId=null}={}) {
+  if (broadImportBusy) return {ok:false,error:'Another flight import is already in progress.'};
   broadImportBusy = true;
   activeResearchKey = task.key;
   renderBroadResearch();
   const expectedUrl = googleFlightsSearchUrl(task.leg);
   let tab;
   try {
-    tab = await chrome.tabs.create({url: expectedUrl});
-    if (!tab?.id) throw new Error('Chrome did not return a tab ID.');
-    status(`Opened ${task.leg.from} to ${task.leg.to} on ${task.leg.date}. Waiting for Google Flights cards...`);
-    // Message attempts begin before document_idle; retry until the content
-    // script is installed or the search needs manual review.
-    for (let attempt = 0; attempt < 40; attempt++) {
-      try {
-        const reply = await chrome.tabs.sendMessage(tab.id, {
-          type:'routewise:auto-import-flight-search', expectedUrl
-        });
-        if (reply?.ok) return; // Storage event reports validated cache status.
-        if (!reply?.retry) {
-          status(`Automatic import unavailable: ${reply?.error || 'No results returned'}. Use the Google Flights overlay to import manually.`);
-          return;
-        }
-      } catch (error) {
-        if (/No tab with id/i.test(error?.message || '')) {
-          status('Google Flights tab was closed before the import finished.');
-          return;
-        }
-        // This is expected while the new page is loading its content script.
-      }
-      await new Promise(resolve => setTimeout(resolve, 800));
+    if (Number.isInteger(reuseTabId)) {
+      try { tab=await chrome.tabs.update(reuseTabId,{url:expectedUrl,active:true}); }
+      catch { tab=null; } // A traveler may have closed the research tab.
     }
-    status('Google Flights did not become available. On its tab, use the RouteWise import overlay manually.');
-  } catch (error) {
-    status(`Could not open/import flight search: ${error.message}`);
+    if(!tab)tab=await chrome.tabs.create({url:expectedUrl});
+    if (!Number.isInteger(tab?.id)) throw new Error('Chrome did not return a tab ID.');
+    status(`Searching ${task.leg.from} to ${task.leg.to} on ${task.leg.date}. Waiting for Google Flights cards...`);
+    for(let attempt=0;attempt<40;attempt++) {
+      let reply;
+      try {
+        reply=await chrome.tabs.sendMessage(tab.id,{
+          type:'routewise:auto-import-flight-search',expectedUrl
+        });
+      } catch(error) {
+        if (/No tab with id/i.test(error?.message || '')) {
+          const message='Google Flights tab was closed before import finished.';
+          status(message);return {ok:false,error:message,tabId:tab.id};
+        }
+        // The content script may not yet be installed in the new document.
+        await new Promise(resolve=>setTimeout(resolve,800));
+        continue;
+      }
+      if(reply?.ok) {
+        try {
+          // Do not advance on a content-script acknowledgement alone: the
+          // captured search must match this task and survive validation.
+          const {pendingFlightCapture:capture}=await chrome.storage.local.get('pendingFlightCapture');
+          if(!captureFromOpenedOneWaySearch(capture,task)) {
+            throw new Error('Captured cards did not match this one-way search and date.');
+          }
+          const cached=await autoCacheBroadCapture(capture);
+          if(!cached || broadCache[task.key]?.capturedAt!==capture.capturedAt) {
+            throw new Error('The matching results could not be saved.');
+          }
+          return {ok:true,tabId:tab.id,options:broadCache[task.key].options.length};
+        } catch(error) {
+          const message=`Import needs review: ${error.message}`;
+          status(message);return {ok:false,error:message,tabId:tab.id};
+        }
+      }
+      if(!reply?.retry) {
+        const message=`Automatic import unavailable: ${reply?.error || 'No flight results returned'}. Use the manual Google Flights overlay.`;
+        status(message);return {ok:false,error:message,tabId:tab.id};
+      }
+      await new Promise(resolve=>setTimeout(resolve,800));
+    }
+    const message='Google Flights did not become available. Use the manual import overlay on its tab.';
+    status(message);return {ok:false,error:message,tabId:tab.id};
+  } catch(error) {
+    const message=`Could not open/import flight search: ${error.message}`;
+    status(message);return {ok:false,error:message,tabId:tab?.id};
   } finally {
-    broadImportBusy = false;
+    broadImportBusy=false;
+    renderBroadResearch();
   }
 }
-$('broadSearches').addEventListener('click', async event=>{
+$('broadSearches').addEventListener('click',async event=>{
   const open=event.target.closest('button[data-broad-open]');
   const clear=event.target.closest('button[data-broad-remove]');
+  if(broadBatchRunning || broadImportBusy)return;
   if(clear){delete broadCache[clear.dataset.broadRemove];await persist();render();return;}
   if(!open)return;
   const task=broadTasks().find(item=>item.key===open.dataset.broadOpen);
-  if(task) await openAndImportResearch(task);
+  if(task)await openAndImportResearch(task);
 });
 $('broadOpenNext').addEventListener('click',async()=>{
+  if(broadImportBusy||broadBatchRunning)return;
   const task=broadTasks().find(item=>!broadCache[item.key]);
-  if(!task){status('All unique flight searches have cached results. Open an individual search to refresh it.');return;}
+  if(!task){status('All unique flight searches already have cached results. Open an individual search to refresh it.');return;}
   await openAndImportResearch(task);
 });
+$('broadStopImport').addEventListener('click',()=>{
+  if(!broadBatchRunning)return;
+  broadBatchCancelRequested=true;
+  $('broadStopImport').disabled=true;
+  $('broadBatchProgress').textContent='Stopping after the current flight search finishes...';
+});
+async function importAllMissingFlights({fromWorkflow=false}={}) {
+  if(broadBatchRunning||broadImportBusy||(workflowRunning&&!fromWorkflow))return null;
+  const todo=broadTasks().filter(task=>!broadCache[task.key]);
+  if(!todo.length){status('All unique flight searches are already cached. Use Refresh on an individual leg if needed.');return {total:0,completed:0,imported:0,failures:[],stopped:false};}
+  broadBatchRunning=true;
+  broadBatchCancelRequested=false;
+  renderBroadResearch();
+  let report;
+  try {
+    report=await runFlightImportQueue(broadTasks(),{
+      isCached:task=>Boolean(broadCache[task.key]),
+      shouldStop:()=>broadBatchCancelRequested,
+      importTask:(task,options)=>openAndImportResearch(task,options),
+      onProgress:progress=>{
+        const failures=progress.failures.length;
+        if(progress.current){
+          const {task,number}=progress.current;
+          const message=`Flight ${number} of ${progress.total}: ${task.leg.from} → ${task.leg.to} (${task.leg.date}). ${progress.imported} imported${failures?`, ${failures} need review`:''}.`;
+          $('broadBatchProgress').textContent=message;
+          if(fromWorkflow)$('workflowStatus').textContent=message;
+        }else if(progress.completed===progress.total || progress.stopped){
+          const message=`${progress.imported} of ${progress.total} flight searches imported${failures?`; ${failures} need review`:''}${progress.stopped?' (stopped early)':''}.`;
+          $('broadBatchProgress').textContent=message;
+          if(fromWorkflow)$('workflowStatus').textContent=message;
+        }
+      }
+    });
+    const failures=report.failures.length;
+    const summary=`${report.imported} of ${report.total} missing one-way searches imported${failures?`; ${failures} need manual review`:''}${report.stopped?' (stopped early)':''}. Saved fares were not changed.`;
+    $('broadBatchProgress').textContent=summary;
+    status(summary);
+    return report;
+  } catch(error) {
+    const message=`Batch import stopped unexpectedly: ${error.message}. Any completed searches remain cached.`;
+    $('broadBatchProgress').textContent=message;
+    status(message);
+    return null;
+  } finally {
+    broadBatchRunning=false;
+    broadBatchCancelRequested=false;
+    renderBroadResearch();
+  }
+}
+$('broadImportAll').addEventListener('click',()=>{void importAllMissingFlights();});
+// User-facing single action: generate first, then research only the missing unique flights.
+// Keep each route visible while the queue runs; the comparison rerenders as captures arrive.
+$('findBestRoutes').addEventListener('click',async()=>{
+  if(workflowRunning||broadBatchRunning||broadImportBusy||$('interpret').disabled)return;
+  workflowRunning=true;
+  $('findBestRoutes').disabled=true;
+  $('findBestRoutes').textContent='Finding your routes…';
+  $('workflowStop').hidden=false;
+  $('workflowStop').disabled=true; // Enable only once flight research begins.
+  renderBroadResearch();
+  try {
+    const outcome=await runBestRouteWorkflow({
+      generateRoutes:generateCandidateRoutes,
+      getSearchCounts:()=>{
+        const tasks=broadTasks();
+        return {all:tasks.length,pending:tasks.filter(task=>!broadCache[task.key]).length};
+      },
+      importFlights:()=>importAllMissingFlights({fromWorkflow:true}),
+      onStage:({phase,counts})=>{
+        if(phase==='generating') $('workflowStatus').textContent='Building candidate itineraries…';
+        if(phase==='researching') {
+          $('findBestRoutes').textContent='Researching flights…';
+          $('workflowStop').disabled=false;
+          $('workflowStatus').textContent=`Researching ${counts.pending} missing flight search(es) across ${counts.all} unique legs…`;
+        }
+      }
+    });
+    let trainReport=null;
+    if(!['generation-failed','research-failed','stopped'].includes(outcome.status) && trainTasks().some(task=>!trainCache[task.key])){
+      $('findBestRoutes').textContent='Researching trains…';
+      $('workflowStop').disabled=false;
+      $('workflowStatus').textContent='Researching train searches; any ambiguous result will stay unpriced for review…';
+      trainReport=await importAllTrains({fromWorkflow:true});
+    }
+    const report=outcome.report;
+    const resultMessage=outcome.status==='generation-failed'
+      ? 'Could not build routes. Review your trip details and try again.'
+      : outcome.status==='no-flights'
+        ? 'Routes are ready. No flight searches are required for these options.'
+        : outcome.status==='cached'
+          ? 'Route comparisons are ready using existing cached flight estimates. Refresh older prices before booking.'
+          : outcome.status==='research-failed'
+            ? 'Routes are ready, but flight research could not finish. You can retry missing flights below.'
+            : `${report?.imported||0} flight search(es) imported. ${report?.failures?.length||0} need manual review${outcome.status==='stopped'?' (stopped early)':''}. Compare your options below; prices are estimates.`;
+    $('workflowStatus').textContent=resultMessage+(trainReport?` Train search results: ${trainReport.success} indicative imported; ${trainReport.needsReview} need review.`:'');
+    if(outcome.status!=='generation-failed')$('routeResults').scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(error){
+    $('workflowStatus').textContent=`Could not complete route research: ${error.message}. Check the details below and retry.`;
+    status(`Route research error: ${error.message}`);
+  }finally{
+    workflowRunning=false;
+    $('findBestRoutes').disabled=false;
+    $('findBestRoutes').textContent='Find my best routes ↗';
+    $('workflowStop').hidden=true;
+    $('workflowStop').disabled=false;
+    renderBroadResearch();
+  }
+});
+$('workflowStop').addEventListener('click',()=>{
+  if(trainBatchBusy){trainBatchStop=true;$('workflowStop').disabled=true;$('workflowStatus').textContent='Stopping after the active train search…';return;}
+  if(!workflowRunning||!broadBatchRunning)return;
+  broadBatchCancelRequested=true;
+  $('workflowStop').disabled=true;
+  $('workflowStatus').textContent='Stopping after the current flight search…';
+});
+
 $('broadCaptureSave').addEventListener('click',async()=>{
   const task=broadTasks().find(item=>item.key===$('broadCaptureTask').value);
   if(!task)return;
@@ -517,7 +1001,7 @@ function searchLeg(key) {
   const leg = lookupLeg(key);
   if (!leg) { status('That leg no longer exists.'); return; }
   try {
-    const search=transportSearch(leg);
+    const search=leg.mode==='train'?{provider:'Omio train search',url:trainSearchUrl(leg),datePreFilled:true}:transportSearch(leg);
     chrome.tabs.create({url:search.url});
     const routeText = `${placeName(leg.from)} → ${placeName(leg.to)} on ${leg.date}`;
     status(`Opened ${search.provider} for ${routeText}. ${search.datePreFilled ? 'Check that the route/date are correct. ' : 'Set the travel date manually; dates are not prefilled. '}Verify the exact terminals, actual service, transfer times, baggage and fares before recording a price.`);
@@ -548,7 +1032,8 @@ $('requestedRegion').addEventListener('change', () => {
   // A newly entered region should not silently retain a vacation stop from the last trip.
   if(region && region !== trip.requestedRegion && preferred) $('preferred').value = '';
 });
-$('generate').addEventListener('click', async () => {
+async function generateCandidateRoutes() {
+  if(broadBatchRunning || broadImportBusy){status('Finish importing flight searches before regenerating routes.');return false;}
   $('generate').disabled=true;
   try {
     const guarded=protectReviewedTrip(getFormTrip(),{parsedPlan,parsedRequest});
@@ -626,20 +1111,28 @@ $('generate').addEventListener('click', async () => {
       else if(!data.hasNetwork)groundNotice=' No GTFS feeds loaded. Optional: npm run sync:transit (see README).';
       else groundNotice=' The imported GTFS feeds did not show a relevant intercity connection.';
     }catch(error){groundNotice=` Ground-network lookup unavailable: ${error.message}. Flight candidates preserved.`;}
-    trip=next;routes=nextRoutes;sessionCleared=false;
+    trip=next;routes=nextRoutes;sessionCleared=false;groundQuotes={};
     $('editor').hidden=true;currentKey=null;
     await persist();render();
     const withConnections=routes.filter(route=>route.legs.length>2).length;
     generationStatus(`${guarded.notices.join(' ')} Generated ${routes.length} candidate routes${withConnections?` (${withConnections} with connections)`:''}.${hubWarning}${groundNotice}`.trim());
-  } catch(error) {generationStatus(`Could not generate routes: ${error.message}`);}
+    return routes.length > 0;
+  } catch(error) {generationStatus(`Could not generate routes: ${error.message}`);return false;}
   finally {$('generate').disabled=false;}
+}
+// Keep the original generation-only control for advanced troubleshooting.
+$('generate').addEventListener('click', async () => {
+  if(broadBatchRunning || broadImportBusy){status('Finish importing flight searches before regenerating routes.');return;}
+  if(workflowRunning)return;
+  await generateCandidateRoutes();
 });
 $('resetPlan').addEventListener('click', async()=>{
-  if ($('interpret').disabled || $('generate').disabled || broadImportBusy) {
+  if ($('interpret').disabled || $('generate').disabled || broadImportBusy || broadBatchRunning || workflowRunning) {
     status('Finish the current search or interpretation before starting fresh.');
     return;
   }
   if (!confirm('Clear the displayed trip, selections, route results, and unfinished edits? Your trip description, saved baggage, saved fares, and cached research will be kept.')) return;
+  groundQuotes={};
   const description=$('request').value; // Include edits not yet saved to storage.
   trip={...DEFAULT_TRIP,origin:'',preferred:'',destination:'',requestedRegion:'',
     startDate:'',endDate:'',request:description};
@@ -652,6 +1145,7 @@ $('resetPlan').addEventListener('click', async()=>{
   $('ticketEditor').hidden=true; $('editor').hidden=true;
   $('priceSaveNotice').hidden=true; $('priceSaveNotice').textContent='';
   $('generationStatus').textContent='';
+  $('workflowStatus').textContent='';
   $('broadConfirmOneWay').checked=false;
   $('broadCaptureArea').hidden=true;
   setForm();showPlanPreview();showCaptureNotice();render();
@@ -1108,7 +1602,17 @@ async function autoCacheBroadCapture(capture) {
   }
 }
 chrome.storage.onChanged.addListener((changes,area)=>{
-  if(area!=='local'||!changes.pendingFlightCapture)return;
+  if(area!=='local')return;
+  if(changes.priceTestMode){
+    priceTestMode = changes.priceTestMode.newValue === true;
+    // Entering test mode restores the first-flight import starting point.
+    // Turning it off keeps AI caches intact and resumes normal persistence.
+    if (priceTestMode) void restartPriceImportTest();
+    else { clearPriceImportSessionState(); showCaptureNotice(); render();
+      status('Price import test mode disabled. New prices will be saved normally.'); }
+  }
+  if(changes.priceImportResetRequest && priceTestMode) void restartPriceImportTest();
+  if(!changes.pendingFlightCapture)return;
   pendingFlightCapture=changes.pendingFlightCapture.newValue||null;
   showCaptureNotice();
   $('broadConfirmOneWay').checked=false;
@@ -1133,6 +1637,7 @@ $('showGoogleFlightsOverlay').addEventListener('click',async()=>{
 });
 $('routes').addEventListener('click', (event) => {
   const importButton = event.target.closest('button[data-import-flight]');
+  const trainButton = event.target.closest('button[data-import-train]');
   const editButton = event.target.closest('button[data-edit]');
   const searchButton = event.target.closest('button[data-search]');
   const roundTripButton = event.target.closest('button[data-roundtrip-route]');
@@ -1140,6 +1645,7 @@ $('routes').addEventListener('click', (event) => {
   const copyButton = event.target.closest('button[data-copy-route]');
   const removeButton = event.target.closest('button[data-remove-manual]');
   if(importButton)openFlightImport(importButton.dataset.importFlight);
+  if(trainButton)openTrainImport(trainResearchKey(lookupLeg(trainButton.dataset.importTrain)));
   if(copyButton)openManualEditor(copyButton.dataset.copyRoute);
   if(removeButton){manualRoutes=manualRoutes.filter(route=>route.id!==removeButton.dataset.removeManual);persist().then(render);status('Manual itinerary removed. Saved fare entries were left intact.');}
   if (roundTripButton) searchRoundTrip(roundTripButton.dataset.roundtripRoute, Number(roundTripButton.dataset.roundtripIndex));
@@ -1171,6 +1677,48 @@ $('routes').addEventListener('click',async event=>{
   delete flightTimes[key];
   if(offers[key])offers[key]={...offers[key],departureClock:'',departureTimezone:''};
   await persist();render();status('Saved departure time cleared; fare amount retained.');
+});
+// The traveler reviews the returned stop/route before a Google fare may count.
+$('routes').addEventListener('click',event=>{
+  const button=event.target.closest('button[data-accept-ground]');
+  if(!button)return;
+  const route=visibleRoutes().find(r=>r.id===button.dataset.acceptGroundRoute);
+  const leg=route?.legs?.find(l=>l.key===button.dataset.acceptGround);
+  if(!leg||leg.mode!=='transfer')return;
+  const key=routeTransferQuoteKey(route,leg),record=groundQuotes[key];
+  if(!record?.fare || record.fare.currencyCode!=='EUR'||record.requestedDate!==leg.date)return;
+  groundQuotes[key]={...record,acceptedForComparison:true};
+  render();status('Reviewed Google transit estimate added to the provisional route total. No fare was booked or saved.');
+});
+// Explicit, billable Google Maps transit research; never runs during page render.
+$('routes').addEventListener('submit',async event=>{
+  const form=event.target.closest('form[data-google-ground]');
+  if(!form)return;
+  event.preventDefault();
+  if(!GOOGLE_ROUTES_ENABLED){status('Google Routes API lookups are temporarily disabled; no Google API call was made.');return;}
+  if(groundLookupBusy){status('Finish the current ground-transfer lookup first.');return;}
+  const route=visibleRoutes().find(r=>r.id===form.dataset.googleGroundRoute);
+  const leg=route?.legs?.find(item=>item.key===form.dataset.googleGround);
+  if(leg?.mode!=='transfer'){status('Choose a local transfer to research.');return;}
+  try{
+    const localTime=form.elements.localTime.value;
+    const time=localTransitTimeToISO(localTime,form.elements.timeZone.value.trim());
+    const from=leg.fromKind==='airport' ? airportName(leg.from) : (leg.fromLabel||leg.from);
+    const to=leg.toKind==='airport' ? airportName(leg.to) : (leg.toLabel||leg.to);
+    groundLookupBusy=true;
+    status(`Finding public transit for ${from} to ${to}...`);
+    const response=await fetch('http://127.0.0.1:8787/ground-transit',{method:'POST',
+      headers:{'content-type':'application/json'},body:JSON.stringify({origin:from,destination:to,
+        time,timeKind:form.elements.timeKind.value,localDate:localTime.slice(0,10)})});
+    const data=await response.json();
+    if(!response.ok)throw new Error(data.error||'Google transit lookup failed.');
+    const first=data.routes?.[0]||null;
+    groundQuotes[routeTransferQuoteKey(route,leg)]={...data,requestedDate:localTime.slice(0,10),fare:first?.fare||null,acceptedForComparison:false};
+    render();
+    status(!first?'Google did not return a public transit route; no fare was assigned.':
+      `Google returned ${data.routes.length} transit option(s) for this local transfer. ${first.fare?'A provider estimate is available.':'No complete fare was returned.'} Check the actual stations and connection buffer.`);
+  }catch(error){status(`Ground transfer research: ${error.message}`);}
+  finally{groundLookupBusy=false;}
 });
 // Save confirmed ground arrival times even when GTFS only has route-pattern evidence.
 $('routes').addEventListener('submit',async event=>{
@@ -1217,7 +1765,7 @@ $('clearOffers').addEventListener('click', async () => {
   offers = {}; roundTripTickets={};lastSavedTicketKeys=[]; await persist(); render(); status('Saved one-way fares and round-trip tickets cleared.');
 });
 $('export').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify({version:'0.4.9',trip,bag,offers,roundTripTickets,flightTimes,groundTimes,flightResearch,broadCache,routes,manualRoutes,parsedPlan,parseWarnings,parseSource,parsedRequest,parseDebug},null,2)],{type:'application/json'});
+  const blob = new Blob([JSON.stringify({version:'0.4.10',trip,bag,offers,roundTripTickets,flightTimes,groundTimes,flightResearch,broadCache,trainCache,routes,manualRoutes,parsedPlan,parseWarnings,parseSource,parsedRequest,parseDebug},null,2)],{type:'application/json'});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a'); link.href = url; link.download = 'routewise-trip.json';
   document.body.append(link); link.click(); link.remove();
@@ -1226,7 +1774,8 @@ $('export').addEventListener('click', () => {
 });
 async function init() {
   try {
-    const saved = await chrome.storage.local.get(['trip','bag','offers','roundTripTickets','flightTimes','groundTimes','flightResearch','pendingFlightCapture','routes','manualRoutes','destinationCandidates','destinationCandidateKey','connectionCandidates','connectionCandidateKey','parsedPlan','parseWarnings','parseSource','parsedRequest','parseDebug','sessionCleared','lastAiInterpretation']);
+    const saved = await chrome.storage.local.get(['trainCache','trip','bag','offers','roundTripTickets','flightTimes','groundTimes','flightResearch','broadCache','pendingFlightCapture','routes','manualRoutes','destinationCandidates','destinationCandidateKey','connectionCandidates','connectionCandidateKey','parsedPlan','parseWarnings','parseSource','parsedRequest','parseDebug','sessionCleared','lastAiInterpretation','priceTestMode']);
+    priceTestMode = saved.priceTestMode === true;
     // Upgrade from v0.2.1: restore an explicitly named country from saved request text.
     const previous = saved.trip || {};
     const oldRegion = /\bportugal\b/i.test(previous.request || '') ? 'Portugal' :
@@ -1240,6 +1789,7 @@ async function init() {
     roundTripTickets = saved.roundTripTickets && typeof saved.roundTripTickets==='object' && !Array.isArray(saved.roundTripTickets)?saved.roundTripTickets:{};
     flightResearch = saved.flightResearch && typeof saved.flightResearch==='object' && !Array.isArray(saved.flightResearch) ? saved.flightResearch : {};
     broadCache = saved.broadCache && typeof saved.broadCache==='object' && !Array.isArray(saved.broadCache) ? saved.broadCache : {};
+    trainCache = saved.trainCache && typeof saved.trainCache==='object' && !Array.isArray(saved.trainCache) ? saved.trainCache : {};
     pendingFlightCapture = saved.pendingFlightCapture?.text ? saved.pendingFlightCapture : null;
     flightTimes = saved.flightTimes && !Array.isArray(saved.flightTimes) && typeof saved.flightTimes === 'object' ? saved.flightTimes : {};
     groundTimes = saved.groundTimes && !Array.isArray(saved.groundTimes) && typeof saved.groundTimes==='object' ? saved.groundTimes : {};
@@ -1267,6 +1817,13 @@ async function init() {
     if (parsedPlan && !Array.isArray(parsedPlan.requested_regions)) {
       parsedPlan = null; parseWarnings = []; parseSource = ''; parsedRequest = ''; parseDebug = null;
     }
+    if(priceTestMode){
+      clearPriceImportSessionState();
+      // Older saved values (or a leftover capture) must never reappear after
+      // a side-panel/browser/extension reload while testing imports.
+      await chrome.storage.local.remove(PRICE_STORAGE_KEYS);
+    await chrome.storage.local.remove('trainCache');
+    }
     setForm();
     showPlanPreview();
     // A previously saved country may require Groq. Don't fail extension startup.
@@ -1277,7 +1834,7 @@ async function init() {
     }
     render();
     showCaptureNotice();
-    status('Ready. Your data stays in this Chrome extension’s local storage.');
+    status(priceTestMode ? 'Price import test ready. All flight searches start uncached; your routes and trip details remain.' : 'Ready. Your data stays in this Chrome extension’s local storage.');
     if(pendingFlightCapture) void autoCacheBroadCapture(pendingFlightCapture);
   } catch (error) { status(`Startup error: ${error.message}`); }
 }

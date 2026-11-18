@@ -4,8 +4,11 @@ import {parseGoogleFlightsSearchResults,searchOptionMatchesLeg} from './google-f
 import {matchingTicketsForRoute} from './roundtrip-tickets.mjs';
 import {connectionWindows} from './connection-windows.mjs';
 import {googleFlightsSearchUrl} from './search-links.mjs';
+import {validDatedTransitResult,routeTransferQuoteKey} from './google-ground-routes.mjs';
+import {indicativeTrainQuote} from './train-research.mjs';
 
-export const TRAIN_ESTIMATE_EUR=20;
+// Deprecated: no universal train fare is applied.
+export const TRAIN_ESTIMATE_EUR=null;
 export const MAX_BROAD_OPTIONS=5;
 export const CACHE_STALE_HOURS=24;
 const ISO=/^\d{4}-\d{2}-\d{2}$/;
@@ -117,7 +120,7 @@ function acceptByPreviousFlight(previous,leg,option){
   if(gap<FLIGHT_TRANSFER_MINUTES)return {allowed:false,check:'short_flight_connection'};
   return {allowed:true,check:'flight_connection_meets_planning_buffer'};
 }
-export function estimateRoute(route,cache={},offers={},tickets={}, {bufferMinutes=180,groundTimes={}}={}){
+export function estimateRoute(route,cache={},offers={},tickets={}, {bufferMinutes=180,groundTimes={},groundQuotes={},trainCache={}}={}){
   const ticketMatches=matchingTicketsForRoute(route,tickets);
   const ticketByLeg=new Map();
   for(const match of ticketMatches){
@@ -128,6 +131,7 @@ export function estimateRoute(route,cache={},offers={},tickets={}, {bufferMinute
   let conflicts=0,uncheckedConnections=0,observedDurationMinutes=0,unknownDurations=0;
   const selected=[];
   route.legs.forEach((leg,index)=>{
+    if(leg.mode==='train')trainCount++;
     const shared=ticketByLeg.get(index);
     const offer=offers?.[leg.key];
     const window=leg.mode==='flight'?windowForLeg(route,index,bufferMinutes,groundTimes):null;
@@ -158,9 +162,16 @@ export function estimateRoute(route,cache={},offers={},tickets={}, {bufferMinute
       const amount=offer.fare+(offer.bagFee||0)+(offer.transferCost||0);
       total+=amount;verifiedCount++;
       selected.push({leg,kind:'verified',costEur:amount,option:null});
-    }else if(leg.mode==='train'){
-      total+=TRAIN_ESTIMATE_EUR;estimatedCount++;trainCount++;
-      selected.push({leg,kind:'train_estimate',costEur:TRAIN_ESTIMATE_EUR,option:null});
+    }else if(leg.mode==='train' && indicativeTrainQuote(trainCache,leg)){
+      const quote=indicativeTrainQuote(trainCache,leg);
+      total+=quote.fareEur;estimatedCount++;
+      selected.push({leg,kind:'train_estimate',costEur:quote.fareEur,
+        option:{departureClock:quote.departureClock,arrivalClock:quote.arrivalClock},
+        cacheAge:researchAge({capturedAt:quote.capturedAt})});
+    }else if(leg.mode==='transfer' && validDatedTransitResult(leg,groundQuotes[routeTransferQuoteKey(route,leg)])){
+      const amount=groundQuotes[routeTransferQuoteKey(route,leg)].fare.amount;
+      total+=amount;estimatedCount++;
+      selected.push({leg,kind:'google_transit_estimate',costEur:amount,option:null});
     }else if(choice){
       total+=choice.estimatedEur;estimatedCount++;
       selected.push({leg,kind:'flight_estimate',costEur:choice.estimatedEur,option:choice,cacheAge:researchAge(cache[researchKey(leg)])});

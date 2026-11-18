@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {handleGroundTransitRequest} from './google-ground-handler.mjs';
 import { TRIP_SCHEMA, validateTripPlan, normalizeTripWithDiagnostics } from './trip-parser.mjs';
 import { resolveSuggestedDestination, resolveLocation, catalogMetadata, LOCATION_RECORDS } from './location-resolver.mjs';
 import {loadTransitNetwork,discoverGroundEdges} from './gtfs-network.mjs';
@@ -8,6 +9,7 @@ const MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
 const API_KEY = process.env.GROQ_API_KEY || '';
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('Invalid PORT');
 const ALLOWED_EXTENSION_ID = process.env.ROUTEWISE_EXTENSION_ID || '';
+const GOOGLE_ROUTES_ENABLED = process.env.ROUTEWISE_GOOGLE_ROUTES_ENABLED === 'true'; // default OFF
 
 const INSTRUCTIONS = `You are RouteWise Stage A: a travel-constraint extractor, NOT a trip planner.
 Return only strict JSON matching the schema. Do not search for flights, recommend cities, invent fares, or claim routes operate.
@@ -224,10 +226,24 @@ function allowedOrigin(origin) {
   return !ALLOWED_EXTENSION_ID || origin === `chrome-extension://${ALLOWED_EXTENSION_ID}`;
 }
 
-export function createServer({parseTrip=parseWithGroq,suggestDestinations=suggestDestinationsWithGroq,suggestConnections=suggestConnectionsWithGroq,discoverGround=discoverGroundNetwork}={}) {
+export function createServer({parseTrip=parseWithGroq,suggestDestinations=suggestDestinationsWithGroq,suggestConnections=suggestConnectionsWithGroq,discoverGround=discoverGroundNetwork,handleGroundTransit=handleGroundTransitRequest,googleRoutesEnabled=GOOGLE_ROUTES_ENABLED}={}) {
   return http.createServer(async (req, res) => {
     const origin = req.headers.origin;
     const permitted = allowedOrigin(origin);
+    // Transit requests share this listener, but must pass the same extension
+    // origin/ID restrictions as the existing RouteWise endpoints. The Google
+    // handler owns its CORS, validation, quota, and no-store response.
+    if (req.url === '/ground-transit' && permitted) {
+      if (!googleRoutesEnabled) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary','Origin');
+        res.setHeader('Content-Type','application/json; charset=utf-8');
+        res.writeHead(503);
+        res.end(JSON.stringify({error:'Google Routes API is temporarily disabled. Use train search links.'}));
+        return;
+      }
+      if (await handleGroundTransit(req, res)) return;
+    }
     if (permitted) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary','Origin');

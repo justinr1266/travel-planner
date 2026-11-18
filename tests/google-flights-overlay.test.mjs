@@ -81,7 +81,7 @@ test('attribute serialization escapes untrusted labels and no automatic fare sav
 });
 test('manifest scope and side-panel bridge are correctly configured',()=>{
   const manifest=JSON.parse(readFileSync(new URL('../manifest.json',import.meta.url),'utf8'));
-  assert.equal(manifest.version,'0.4.9');
+  assert.equal(manifest.version,'0.4.10');
   assert.equal(manifest.content_scripts[0].matches[0],'https://www.google.com/travel/flights*');
   assert.equal(manifest.content_scripts[0].js[0],'flights-overlay.js');
   assert.equal(manifest.permissions.includes('scripting'),false);

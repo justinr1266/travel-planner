@@ -66,6 +66,23 @@
       <pre id="testOutput" class="test-output" role="status" aria-live="polite">Select a test to see its result.</pre>
     </section>
 
+    <section class="card" id="priceTestTools">
+      <div class="heading"><div><h2>Price import test mode</h2><p>Begin again just before your first flight import, without regenerating candidate routes or spending Groq tokens.</p></div></div>
+      <label class="test-mode-toggle" for="priceTestMode">
+        <input id="priceTestMode" type="checkbox" />
+        <span>Enable temporary price-import testing</span>
+      </label>
+      <p id="priceTestState" class="foot-status" role="status">Loading test setting…</p>
+      <div class="actions"><button id="restartPriceImportTest" type="button" class="secondary" disabled>Restart imports only · keep routes</button></div>
+      <p class="privacy">Each reset keeps your trip, generated routes, baggage, Groq caches and transit data, but clears flight quotes, saved fares, imported flight details, flight times and import progress. It does not close Google Flights tabs or make Groq calls. Export important fares before enabling testing.</p>
+    </section>
+
+    <section class="card" id="planningResetTools">
+      <div class="heading"><div><h2>Reset planning session</h2><p>Clear the trip comparisons, flight and train research, recorded prices, and unfinished edits. Start with just your trip description.</p></div></div>
+      <div class="actions"><button id="resetPlanningSession" type="button" class="secondary">Reset all trip results</button></div>
+      <p class="privacy">This permanently deletes locally saved fares, tickets, flight and train quotes, generated and manual routes, interpretations, suggestions, timings, and captured research. Your written trip description, baggage profile, and developer price-test setting remain. API keys and downloaded GTFS data are not touched. Export important results first.</p>
+    </section>
+
     <section class="card">
       <div class="heading"><div><h2>Recent activity</h2><p>Last 50 status messages, stored locally in this extension.</p></div><button id="clearEvents" type="button" class="ghost">Clear log</button></div>
       <div id="eventLog" class="event-log" aria-live="polite">No activity recorded yet.</div>
