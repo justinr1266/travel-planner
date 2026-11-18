@@ -140,6 +140,21 @@
     }
     return found;
   }
+  // Google Flights may render nearby-airport suggestions when the exact search
+  // has NO options. This is a definitive *search result*, not an import timeout.
+  // Look only in the active results region, never in sidebar suggestions.
+  function explicitNoMatchingFlights(root) {
+    const main = root?.querySelector?.('[role="main"]') || root?.querySelector?.('main');
+    if (!main || typeof main.querySelectorAll !== 'function') return false;
+    const heading = [...main.querySelectorAll('h3')].some(node =>
+      /^No options matching your search\.?$/i.test(String(node.textContent||'').trim()));
+    if (!heading) return false;
+    const announcement = [...main.querySelectorAll('[aria-live]')].some(node =>
+      /^No results returned, alternative suggestions found\.?$/i.test(String(node.textContent||'').trim()));
+    const help = /Try changing your dates or destination to see results/i.test(main.textContent||'');
+    return announcement || help;
+  }
+
   function capturePayload(records, sourceUrl, now=new Date().toISOString()) {
     const accepted = [];
     let totalLength = 0;
@@ -176,7 +191,7 @@
   }
   // Test the exact DOM-adapter code in Node without downloading Google Flights.
   if (typeof module !== 'undefined' && module?.exports) {
-    Object.assign(module.exports,{cardRecord,collectCards,capturePayload,escapeAttribute,sameOpenedSearch});
+    Object.assign(module.exports,{cardRecord,collectCards,capturePayload,escapeAttribute,sameOpenedSearch,explicitNoMatchingFlights});
   }
   if (typeof document === 'undefined' || typeof chrome === 'undefined' ||
     !/^\/travel\/flights(?:\/|$)/.test(location.pathname)) return;
@@ -303,11 +318,19 @@
     const deadline = Date.now() + 30000;
     let lastSignature = '';
     let stablePasses = 0;
+    let noResultsPasses = 0;
     while (Date.now() < deadline) {
       if (!sameOpenedSearch(location.href, expectedUrl)) {
         return {ok:false,error:'Search URL changed. Use the manual overlay to review results.'};
       }
       const found = collectCards(document);
+      // Confirm the explicit no-options page persists across three polls.
+      // Nearby-airport suggestion prices are NEVER treated as matching fares.
+      noResultsPasses = !found.length && explicitNoMatchingFlights(document)
+        ? noResultsPasses + 1 : 0;
+      if (noResultsPasses >= 3) {
+        return {ok:true,unavailable:true,evidence:'explicit_no_matching_options',sourceUrl:location.href};
+      }
       const signature = found.map(record => record.snapshot).join('\n');
       const hasPricedFlight = found.some(record => Number.isFinite(record.price));
       stablePasses = hasPricedFlight && signature === lastSignature ? stablePasses + 1 : 0;

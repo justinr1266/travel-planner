@@ -163,10 +163,60 @@ export function captureMatchesTrainSearch(capture,task){
   try{
     const expected=new URL(trainSearchUrl(task));
     const actual=new URL(capture?.sourceUrl);
-    if(actual.hostname!==expected.hostname||actual.pathname!==expected.pathname)return false;
+    // Omio's affiliate /links/ URL can redirect to a different results path.
+    // Accept a redirect ONLY if the final HTTPS URL still proves the exact
+    // stations, date and train filter. Redirects that lose any field still
+    // require user review; do not infer the date from the opened tab.
+    if(actual.protocol!=='https:' ||
+       actual.hostname.replace(/^www\./,'')!==expected.hostname.replace(/^www\./,''))return false;
     return ['departurePosTerm','arrivalPosTerm','departureDate','travelMode'].every(field=>
+      Boolean(actual.searchParams.get(field)) &&
       actual.searchParams.get(field)===expected.searchParams.get(field));
   }catch{return false;}
+}
+
+// A redirect can remove Omio's dated search parameters while retaining the
+// correct search. This is deliberately *indicative-only*: RouteWise initiated
+// the exact dated link, and the page's selected weekday/month/day agrees.
+// The year is inherited from the requested link, NOT independently proven.
+// Do not apply this provenance rule to manually pasted captures or other tabs.
+export function automaticTrainSearchEvidence(capture,task,{openedUrl=''}={}) {
+  let expected,actual;
+  try {
+    expected=new URL(trainSearchUrl(task));
+    actual=new URL(capture?.sourceUrl);
+  } catch {return null;}
+  if(actual.protocol!=='https:' ||
+     !['omio.com','www.omio.com'].includes(actual.hostname))return null;
+  const expectedDate=(task?.leg||task)?.date;
+  const date=new Date(`${expectedDate}T12:00:00Z`);
+  if(Number.isNaN(date.getTime()) || date.toISOString().slice(0,10)!==expectedDate)return null;
+  const dayText=new Intl.DateTimeFormat('en-US',{
+    weekday:'short',month:'short',day:'numeric',timeZone:'UTC'
+  }).format(date);
+  const visibleDate=String(capture?.departureDateText||'').trim().replace(/\s+/g,' ');
+  // If Omio explicitly displays a conflicting date, never trust the link alone.
+  if(visibleDate && visibleDate!==dayText &&
+     visibleDate!==`${dayText}, ${date.getUTCFullYear()}`)return null;
+  // A redirect must not silently change any still-visible search parameters.
+  for(const field of ['departurePosTerm','arrivalPosTerm','travelMode']) {
+    const shown=actual.searchParams.get(field);
+    if(shown!==null && shown!==expected.searchParams.get(field))return null;
+  }
+  for(const field of ['departureDate','date','departure_date','outboundDate']) {
+    const shown=actual.searchParams.get(field);
+    if(shown!==null && shown!==expectedDate)return null;
+  }
+  if(captureMatchesTrainSearch(capture,task))
+    return {source:'dated_url',requestedDate:expectedDate,yearIndependentlyVerified:true};
+  // The initial URL comes from chrome.tabs.create in RouteWise, not the site.
+  if(openedUrl!==expected.toString() || !visibleDate ||
+     !Array.isArray(capture?.journeys) || capture.cardSource!=='omio_result_cards')return null;
+  // A matching result card is essential, not a nearby-city fare or page headline.
+  if(!parseTrainCapture(capture,task).options.some(item=>item.stationMatch &&
+      item.departureClock && item.arrivalClock))return null;
+  return {source:'dated_link_and_visible_day',requestedDate:expectedDate,
+    visibleDate,yearIndependentlyVerified:visibleDate.includes(String(date.getUTCFullYear()))};
 }
 
 export function checkedTrainQuote(capture,task,{confirmation=false,optionIndex=0}={}){

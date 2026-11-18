@@ -7,7 +7,7 @@ import {parseGoogleFlightsSearchResults,searchOptionMatchesLeg} from '../google-
 // Execute the actual production DOM adapter with mocked card elements. It
 // exports its pure capture helpers only in a test/module environment.
 const source=readFileSync(new URL('../flights-overlay.js',import.meta.url),'utf8');
-const sandbox={module:{exports:{}}};
+const sandbox={module:{exports:{}},URL};
 vm.runInNewContext(source,sandbox);
 const {cardRecord,collectCards,capturePayload,escapeAttribute}=sandbox.module.exports;
 const MAD_SPC_2027='https://www.travelimpactmodel.org/lookup/flight?itinerary=MAD-SPC-I2-1531-20270111';
@@ -88,4 +88,23 @@ test('manifest scope and side-panel bridge are correctly configured',()=>{
   const panel=readFileSync(new URL('../panel.mjs',import.meta.url),'utf8');
   assert.match(panel,/routewise:show-flight-overlay/);
   assert.match(panel,/if\(importLegKey && pendingFlightCapture\?\.text\)usePendingCapture\(\)/);
+});
+
+test('explicit no-results Google Flights screen is recognized despite nearby airport prices',()=>{
+  const {explicitNoMatchingFlights,sameOpenedSearch}=sandbox.module.exports;
+  const heading={textContent:'No options matching your search'};
+  const announcement={textContent:'No results returned, alternative suggestions found.'};
+  const main={
+    textContent:'Search results No results returned, alternative suggestions found. No options matching your search Try changing your dates or destination to see results Fly from BCN from €208 Fly from VLC from €114',
+    querySelectorAll:selector=>selector==='h3'?[heading]:selector==='[aria-live]'?[announcement]:[]
+  };
+  const page={querySelector:selector=>selector==='[role="main"]'?main:null};
+  assert.equal(explicitNoMatchingFlights(page),true);
+  const url='https://www.google.com/travel/flights/search?tfs=EXACT_REU_SPC_20270111&curr=EUR';
+  assert.equal(sameOpenedSearch(url,url),true);
+  assert.equal(sameOpenedSearch(url.replace('EXACT_REU','EXACT_BCN'),url),false);
+  assert.equal(sameOpenedSearch(url.replace('curr=EUR','curr=USD'),url),false);
+  assert.equal(explicitNoMatchingFlights({querySelector:()=>null}),false);
+  assert.equal(explicitNoMatchingFlights({querySelector:()=>({...main,querySelectorAll:selector=>selector==='h3'?[{textContent:'Try nearby airports'}]:[]})}),false);
+  assert.equal(explicitNoMatchingFlights({querySelector:()=>({...main,querySelectorAll:selector=>selector==='h3'?[heading]:[] ,textContent:'No flights found? not sure'})}),false);
 });

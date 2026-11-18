@@ -83,3 +83,23 @@ test('route generation and interpretation do not replace the active batch resear
   assert.match(panel,/\$\('generate'\)\.addEventListener\('click', async \(\) => \{\s*if\(broadBatchRunning \|\| broadImportBusy\)/);
   assert.match(panel,/\$\('interpret'\)\.addEventListener\('click', async\(\)=>\{\s*if\(broadBatchRunning \|\| broadImportBusy\)/);
 });
+
+test('explicit empty exact search counts as unavailable and skips legs no longer needed',async()=>{
+  const requested=[];
+  let unavailable=false;
+  const report=await runFlightImportQueue(tasks,{
+    isCached:()=>false,
+    shouldSkip:task=>unavailable && task.key===tasks[1].key,
+    importTask:async task=>{
+      requested.push(task.key);
+      if(task.key===tasks[0].key){unavailable=true;return {ok:true,unavailable:true,tabId:42};}
+      return {ok:true,tabId:42};
+    }
+  });
+  assert.deepEqual(requested,[tasks[0].key,tasks[2].key]);
+  assert.equal(report.unavailable,1);
+  assert.equal(report.skipped,1);
+  assert.equal(report.imported,1);
+  assert.equal(report.completed,3);
+  assert.deepEqual(report.failures,[]);
+});

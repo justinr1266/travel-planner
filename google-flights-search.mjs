@@ -202,3 +202,16 @@ export function searchOptionMatchesLeg(option,leg){
   if(option.weekday&&WEEKDAYS[new Date(`${date}T00:00:00Z`).getUTCDay()]!==option.weekday)return false;
   return true;
 }
+
+// Cross-check a no-results signal from the page script before excluding routes.
+// The tfs token includes the airports/date; the currency must remain EUR.
+export function sameExactGoogleFlightsSearch(actualUrl,expectedUrl){
+  try {
+    const actual=new URL(actualUrl),expected=new URL(expectedUrl);
+    const token=expected.searchParams.get('tfs');
+    return actual.origin==='https://www.google.com' && expected.origin===actual.origin &&
+      actual.pathname==='/travel/flights/search' && expected.pathname===actual.pathname &&
+      !!token && actual.searchParams.get('tfs')===token &&
+      actual.searchParams.get('curr')==='EUR' && expected.searchParams.get('curr')==='EUR';
+  }catch{return false;}
+}

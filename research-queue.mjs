@@ -4,7 +4,8 @@ export async function runFlightImportQueue(tasks, {
   isCached,
   importTask,
   onProgress = () => {},
-  shouldStop = () => false
+  shouldStop = () => false,
+  shouldSkip = () => false
 } = {}) {
   if (!Array.isArray(tasks) || typeof isCached !== 'function' || typeof importTask !== 'function') {
     throw new TypeError('Expected tasks, isCached, and importTask.');
@@ -15,15 +16,18 @@ export async function runFlightImportQueue(tasks, {
     seen.add(task.key);
     return !isCached(task);
   });
-  const report = {total:pending.length, completed:0, imported:0, failures:[], stopped:false};
+  const report = {total:pending.length, completed:0, imported:0, unavailable:0, skipped:0, failures:[], stopped:false};
   const publish = current => onProgress({
-    total:report.total, completed:report.completed, imported:report.imported,
+    total:report.total, completed:report.completed, imported:report.imported, unavailable:report.unavailable, skipped:report.skipped,
     failures:[...report.failures], stopped:report.stopped, current
   });
   let reusableTabId = null;
   publish(null);
   for (const task of pending) {
     if (shouldStop()) {report.stopped=true;break;}
+    // A previous exact no-results search may have removed the only route using
+    // this task. Skip the now-irrelevant request without opening another tab.
+    if (shouldSkip(task)) {report.completed++;report.skipped++;publish(null);continue;}
     publish({task,number:report.completed+1});
     let outcome;
     try {
@@ -33,7 +37,8 @@ export async function runFlightImportQueue(tasks, {
     }
     report.completed++;
     if (outcome?.ok) {
-      report.imported++;
+      if(outcome.unavailable)report.unavailable++;
+      else report.imported++;
       if (Number.isInteger(outcome.tabId)) reusableTabId=outcome.tabId;
     } else {
       // Keep a failed Google Flights tab available for manual review; begin

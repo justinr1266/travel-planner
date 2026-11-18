@@ -30,7 +30,10 @@
         changesText:field(element,'numberOfChanges').slice(0,80)
       });
     }
-    return {journeys,cards:[],cardSource:'omio_result_cards'};
+    // This is Omio's visible, currently selected date, not the original URL.
+    // It usually reads e.g. "Mon, Jan 11" and omits the year.
+    const departureDateText=text(document.querySelector('[data-e2e="buttonDepartureDateText"]'));
+    return {journeys,cards:[],cardSource:'omio_result_cards',departureDateText:departureDateText.slice(0,80)};
   }
   function readFallbackCards(){
     const selectors=['[data-testid*="journey"]','[data-testid*="Journey"]','[data-testid*="trip"]',
@@ -57,6 +60,7 @@
   chrome.runtime.onMessage.addListener((message,_sender,sendResponse)=>{
     if(message?.type!=='routewise:capture-train-results')return;
     sendResponse({ok:true,sourceUrl:location.href,title:document.title,
+      readyState:document.readyState,
       ...(readOmioCards()||readFallbackCards()),capturedAt:new Date().toISOString()});
   });
 })();

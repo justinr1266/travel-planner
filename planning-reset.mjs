@@ -2,7 +2,7 @@
 // Do not use chrome.storage.local.clear(): baggage and developer settings must survive.
 export const PLANNING_RESET_KEYS = Object.freeze([
   'trip', 'routes', 'manualRoutes', 'offers', 'roundTripTickets',
-  'flightTimes', 'groundTimes', 'flightResearch', 'broadCache', 'trainCache',
+  'flightTimes', 'groundTimes', 'flightResearch', 'broadCache', 'unavailableFlights', 'trainCache',
   'pendingFlightCapture', 'destinationCandidates', 'destinationCandidateKey',
   'connectionCandidates', 'connectionCandidateKey', 'parsedPlan',
   'parseWarnings', 'parseSource', 'parsedRequest', 'parseDebug',

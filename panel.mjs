@@ -13,14 +13,16 @@ import {expandRoutesWithGround} from './ground-routes.mjs';
 import {connectionWindows,validatedFlightTime,validatedGroundTime} from './connection-windows.mjs';
 import {connectionPanelData,connectionOverview} from './connection-view.mjs';
 import {parseFlightSelection,buildReviewedFlight} from './flight-research.mjs';
-import {parseGoogleFlightsSearchResults,searchOptionMatchesLeg} from './google-flights-search.mjs';
+import {parseGoogleFlightsSearchResults,searchOptionMatchesLeg,sameExactGoogleFlightsSearch} from './google-flights-search.mjs';
 import {parseGoogleFlightsPage} from './google-flights-text.mjs';
 import {roundTripQuoteChoices} from './roundtrip-quote-options.mjs';
 import {researchTasks,researchKey,captureBroadSearch,captureFromOpenedOneWaySearch,researchAge,compareBroadRoutes,TRAIN_ESTIMATE_EUR} from './broad-research.mjs';
 import {googleFlightsSearchUrl} from './search-links.mjs';
 import {runFlightImportQueue} from './research-queue.mjs';
 import {runBestRouteWorkflow} from './best-routes-workflow.mjs';
-import {trainResearchTasks,trainResearchKey,trainSearchUrl,parseTrainCapture,checkedTrainQuote,captureMatchesTrainSearch,indicativeTrainQuote} from './train-research.mjs';
+import {excludeUnavailableFlightRoutes,hasNoFlightsResult} from './flight-availability.mjs';
+import {trainResearchTasks,trainResearchKey,trainSearchUrl,parseTrainCapture,checkedTrainQuote,automaticTrainSearchEvidence,indicativeTrainQuote} from './train-research.mjs';
+import {waitForStableTrainResults} from './train-import-readiness.mjs';
 import {suggestedTransferTime,localTransitTimeToISO,validDatedTransitResult,routeTransferQuoteKey} from './google-ground-routes.mjs';
 import {ticketKey,pairedFlightLegs,pairContainingLeg,matchingTicketSelection,matchingTicketsForRoute,ticketsUsingLeg,replaceTicketsForPair,buildRoundTripTicket} from './roundtrip-tickets.mjs';
 
@@ -56,6 +58,7 @@ let trainBatchStop = false;
 let groundLookupBusy = false;
 let flightResearch = {}; // User-reviewed flight metadata, keyed to an exact flight leg
 let broadCache = {}; // Indicative one-way Best-tab results, never checked fares
+let unavailableFlights = {}; // User-confirmed or explicitly proved empty exact searches; import errors never count.
 let priceTestMode = false; // Developer-only: discard prices across panel reloads and extension updates.
 let activeResearchKey = null; // Explicit user-selected search task
 let pendingFlightCapture = null; // Selection sent via explicit browser context-menu action
@@ -99,7 +102,8 @@ function status(message) {
 }
 function generationStatus(message) { $('generationStatus').textContent = message; status(message); }
 function localDate() { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
-function visibleRoutes() { return sessionCleared ? [] : [...routes, ...manualRoutes.filter(route=>manualRouteForTrip(route,trip))]; }
+function candidatePool() { return sessionCleared ? [] : [...routes, ...manualRoutes.filter(route=>manualRouteForTrip(route,trip))]; }
+function visibleRoutes() { return sessionCleared ? [] : excludeUnavailableFlightRoutes(candidatePool(),unavailableFlights); }
 function candidateKey(t) {return JSON.stringify([t.origin,t.destination,t.requestedRegion,t.startDate,t.endDate,t.request]);}
 function hubKey(t,maxConnections) {return JSON.stringify([t.origin,t.preferred,t.destination,t.startDate,t.endDate,t.request,maxConnections]);}
 function placeName(code) { return visibleRoutes().find(r=>r.places?.[code])?.places?.[code] || airportName(code); }
@@ -202,6 +206,7 @@ async function persist() {
   await chrome.storage.local.set(persistableSession(session, {priceTestMode}));
   if(priceTestMode)await chrome.storage.local.remove('trainCache');
   else await chrome.storage.local.set({trainCache});
+  await chrome.storage.local.set({unavailableFlights});
 }
 function formatWindow(from, to, fixed) {
   if (!from && !to) return 'Not specified';
@@ -473,7 +478,7 @@ function trainPanel(){
   $('broadResearch').insertAdjacentElement('afterend',panel);
   panel.addEventListener('click',async event=>{
     if(event.target.closest('#trainImportAll')){await importAllTrains();return;}
-    if(event.target.closest('#trainBatchStop')){trainBatchStop=true;status('Stopping train import after the active search.');return;}
+    if(event.target.closest('#trainBatchStop')){trainBatchStop=true;status('Stopping train research; the current search will not be saved.');return;}
     const open=event.target.closest('[data-train-open]');
     const capture=event.target.closest('[data-train-capture]');
     const clear=event.target.closest('[data-train-clear]');
@@ -556,7 +561,7 @@ function renderTrainResearch(){
   panel.innerHTML=`<div class="broad-title"><h3>05 · Train research</h3><span class="tag">User-reviewed</span></div>
     <p class="helper">Open a dated Omio train search, inspect the actual results, then import its visible EUR prices. Cached quotes are indicative; only a separately checked fare counts as a recorded price. Google Routes API calls are paused.</p>
     <p class="helper">${tasks.length} unique station-to-station search(es) · ${tasks.filter(t=>trainCache[t.key]).length} indicative quotes cached</p>
-    <div class="import-actions"><button id="trainImportAll" class="primary" type="button" ${trainImportBusy||trainBatchBusy?'disabled':''}>Import all missing train searches ↗</button>${trainBatchBusy?'<button id="trainBatchStop" class="secondary" type="button">Stop after current</button>':''}</div>
+    <div class="import-actions"><button id="trainImportAll" class="primary" type="button" ${trainImportBusy||trainBatchBusy?'disabled':''}>Import all missing train searches ↗</button>${trainBatchBusy?'<button id="trainBatchStop" class="secondary" type="button">Stop research</button>':''}</div>
     <div class="broad-searches">${tasks.map(task=>{
       const quote=indicativeTrainQuote(trainCache,task.leg);
       return `<div class="broad-task"><div><strong>${escapeHtml(task.from)} → ${escapeHtml(task.to)} · ${escapeHtml(task.date)}</strong>
@@ -614,62 +619,106 @@ async function captureTrainTab(){
   }catch(error){$('trainImportStatus').textContent='Train results are not ready. Finish loading the Omio results page, then click Capture visible train results. You can also paste a single journey card.';}
 }
 async function openAndImportTrain(task){
-  if(trainImportBusy)return;
+  if(trainImportBusy)return {ok:false,error:'Another train search is active'};
   trainImportBusy=true;
   openTrainImport(task.key);
   try{
-    const tab=await chrome.tabs.create({url:trainSearchUrl(task)});
+    const openedUrl=trainSearchUrl(task);
+    const tab=await chrome.tabs.create({url:openedUrl});
     if(!Number.isInteger(tab?.id))throw new Error('Chrome did not open the train search tab.');
     trainResearchTabId=tab.id;
-    $('trainImportStatus').textContent='Loading train search; if asked, choose train-only, exact stations and the departure date.';
-    for(let attempt=0;attempt<15;attempt++){
-      await new Promise(resolve=>setTimeout(resolve,900));
-      let reply;
-      try{reply=await chrome.tabs.sendMessage(tab.id,{type:'routewise:capture-train-results'});}
-      catch{continue;}
-      if(reply?.ok && reply.cardSource==='omio_result_cards' && reply.journeys?.length && !parseTrainCapture(reply,task).options.length){
-        displayTrainCapture(task,reply);
-        status('Omio returned train journeys, but none match the requested station pair. No fare was saved.');
-        return {ok:false,tabId:tab.id,error:'Different stations'};
-      }
-      if(reply?.ok && parseTrainCapture(reply,task).options.length){
-        displayTrainCapture(task,reply);
-        if(captureMatchesTrainSearch(reply,task) && reply.cardSource==='omio_result_cards'){
-          const parsed=parseTrainCapture(reply,task);
-          const timed=parsed.options.filter(option=>option.stationMatch && option.departureClock&&option.arrivalClock);
-          if(!timed.length){status('Train cards lack explicit departure and arrival times. Review the results before caching.');return {ok:false,tabId:tab.id,error:'Times need review'};}
-          trainCache[task.key]={...parsed,selected:timed[0],quoteStatus:'indicative'};
-          await persist();render();
-          status(`Auto-cached indicative ${money(timed[0].fareEur)} train quote for ${task.from} → ${task.to}. Review actual fare before booking.`);
-          return {ok:true,tabId:tab.id};
+    $('trainImportStatus').textContent='Waiting for Omio to load and for its journey list to stop changing (up to 90 seconds).';
+    const wait=await waitForStableTrainResults({
+      read:async()=>{
+        // Chrome's load event can precede Omio's dynamically rendered results.
+        const current=await chrome.tabs.get(tab.id);
+        if(current.status!=='complete')return null;
+        const reply=await chrome.tabs.sendMessage(tab.id,{type:'routewise:capture-train-results'});
+        return reply?.ok?{...reply,tabComplete:true}:null;
+      },
+      task,
+      shouldStop:()=>trainBatchStop,
+      onProgress:({elapsedMs,settling,journeysSeen,matchingSeen})=>{
+        const secs=Math.round(elapsedMs/1000);
+        if(secs===0 || secs%6<2){
+          $('trainImportStatus').textContent=settling
+            ? `Omio: ${journeysSeen} priced journey card(s), ${matchingSeen} exact-station match(es). Waiting for matching fares to settle… (${secs}s)`
+            : `Waiting for readable Omio results… (${secs}s / 90s). No fare has been saved.`;
         }
-        status(`Captured potential train prices for ${task.from} → ${task.to}, but the provider changed the URL. Review the itinerary/date and confirm before saving.`);
-        return {ok:false,tabId:tab.id,error:'Provider search page needs review'};
       }
+    });
+    if(wait.status==='stopped'){
+      $('trainImportStatus').textContent='Train batch stopped. The current search tab remains open; no fare was saved.';
+      return {ok:false,tabId:tab.id,error:'Stopped by user'};
     }
-    $('trainImportStatus').textContent='No train results could be read automatically yet. Complete the search in the opened tab, then use Capture visible train results. No fare was saved.';
-    return {ok:false,tabId:tab.id,error:'No readable train results yet'};
-  }catch(error){$('trainImportStatus').textContent=`Train search: ${error.message}`;return {ok:false,error:error.message};}
-  finally{trainImportBusy=false;renderTrainResearch();}
+    if(wait.status==='review'){
+      // Results appeared but never stabilized; preserve them for an explicit
+      // traveler review rather than discarding them after the timeout.
+      displayTrainCapture(task,wait.capture);
+      $('trainImportStatus').textContent='Omio displayed journey prices but the list kept changing. Review the captured train, date and exact stations; then check the confirmation box and choose Cache indicative train quote. The batch is paused.';
+      return {ok:false,tabId:tab.id,error:'Prices need review'};
+    }
+    if(wait.status!=='ready'){
+      $('trainImportStatus').textContent='No readable Omio journey cards appeared within 90 seconds. The batch is paused. Finish loading the tab, then click Capture visible train results; no price was saved.';
+      return {ok:false,tabId:tab.id,error:'Train results not ready'};
+    }
+    const reply=wait.capture;
+    displayTrainCapture(task,reply);
+    const parsed=parseTrainCapture(reply,task);
+    if(reply.cardSource!=='omio_result_cards'){
+      $('trainImportStatus').textContent='This site did not expose supported Omio result cards. Review the original page, then capture/paste a journey and save it manually. The train queue is paused.';
+      return {ok:false,tabId:tab.id,error:'Train result layout needs review'};
+    }
+    if(!parsed.options.length){
+      $('trainImportStatus').textContent=`Omio loaded ${parsed.journeyCardsSeen} journey(s), but none match both ${task.from} and ${task.to} with a readable EUR price and times. Do not import a different station. The train queue is paused.`;
+      return {ok:false,tabId:tab.id,error:'Different stations or no matching fares'};
+    }
+    const evidence=automaticTrainSearchEvidence(reply,task,{openedUrl});
+    if(!evidence){
+      $('trainImportStatus').textContent=`Omio returned ${parsed.options.length} exact-station fare(s), but the requested day could not be matched to the opened search. Check ${task.date} and both stations, then manually confirm and cache the quote. Batch paused.`;
+      return {ok:false,tabId:tab.id,error:'Provider search/date needs review'};
+    }
+    const timed=parsed.options.filter(option=>option.stationMatch&&option.departureClock&&option.arrivalClock);
+    if(!timed.length){
+      $('trainImportStatus').textContent='Omio journey times could not be verified. Review a specific train manually before saving. The queue is paused.';
+      return {ok:false,tabId:tab.id,error:'Times need review'};
+    }
+    trainCache[task.key]={...parsed,selected:timed[0],quoteStatus:'indicative',searchEvidence:evidence};
+    await persist();render();
+    const dateNote=evidence.yearIndependentlyVerified
+      ? 'Date matched on the results page.'
+      : 'Month/day matched Omio; year comes from the original dated link and is not independently verified.';
+    status(`Auto-cached indicative ${money(timed[0].fareEur)} for ${task.from} → ${task.to}. ${dateNote} Check the provider before booking.`);
+    return {ok:true,tabId:tab.id};
+  }catch(error){
+    $('trainImportStatus').textContent=`Train search: ${error.message}. Queue paused; no fare was saved.`;
+    return {ok:false,error:error.message};
+  }finally{trainImportBusy=false;renderTrainResearch();}
 }
 async function importAllTrains({fromWorkflow=false}={}){
   if(trainBatchBusy||trainImportBusy||(workflowRunning&&!fromWorkflow))return null;
   trainBatchBusy=true;trainBatchStop=false;renderTrainResearch();
-  let success=0,needsReview=0;
+  let success=0,needsReview=0,pausedTask=null;
   try{
     for(const task of trainTasks().filter(t=>!trainCache[t.key])){
       if(trainBatchStop)break;
       status(`Researching train ${task.from} → ${task.to} on ${task.date}...`);
       const result=await openAndImportTrain(task);
-      if(result?.ok)success++;else needsReview++;
+      if(result?.ok){success++;continue;}
+      needsReview++;
+      pausedTask=task;
+      // Do NOT silently jump to the next search when Omio is still loading,
+      // redirects away from the exact date, or requires manual review.
+      break;
     }
-    const summary=`${success} train search(es) cached as indicative; ${needsReview} need review${trainBatchStop?' (stopped early)':''}. No unchecked train fares were recorded.`;
+    const summary=pausedTask
+      ? `${success} train search(es) cached as indicative. Paused at ${pausedTask.from} → ${pausedTask.to} (${pausedTask.date}): ${trainBatchStop?'stopped by user':'results not ready or need review'}. The current tab is still open; capture/review this train before continuing. No unchecked fares recorded.`
+      : `${success} train search(es) cached as indicative; ${needsReview} need review${trainBatchStop?' (stopped early)':''}. No unchecked train fares were recorded.`;
     status(summary);
     if(fromWorkflow)$('workflowStatus').textContent=summary;
-    return {success,needsReview,summary};
+    return {success,needsReview,paused:Boolean(pausedTask),summary};
   }finally{trainBatchBusy=false;trainBatchStop=false;renderTrainResearch();}
 }
-
 
 function broadTasks(){return researchTasks(visibleRoutes());}
 function renderBroadResearch(){
@@ -685,17 +734,25 @@ function renderBroadResearch(){
   $('broadStopImport').hidden=!broadBatchRunning;
   $('broadStopImport').disabled=broadBatchCancelRequested;
   $('broadStats').textContent=`${tasks.length} unique one-way flight searches · ${matched.length} cached · ${pending.length} pending · ${trainResearchTasks(visibleRoutes()).length} unique train search(es) below`;
+  const excludedTasks=researchTasks(candidatePool()).filter(task=>hasNoFlightsResult(task.key,unavailableFlights));
   $('broadSearches').innerHTML=tasks.length?tasks.map(task=>{
     const record=broadCache[task.key];
     const statusText=record?`${record.options.length} options · ${researchAge(record)==='stale'?'older than 24h':'cached'}`:'Needs research';
     return `<div class="broad-task"><div><strong>${escapeHtml(task.leg.from)} → ${escapeHtml(task.leg.to)} · ${escapeHtml(task.leg.date)}</strong>
       <small>${escapeHtml(statusText)} · used by ${task.routeCount} route(s)</small></div>
       <div><button type="button" class="secondary" data-broad-open="${escapeHtml(task.key)}">${record?'Refresh':'Open'} ↗</button>
-      ${record?`<button type="button" class="ghost" data-broad-remove="${escapeHtml(task.key)}">Clear</button>`:''}</div></div>
+      ${record?`<button type="button" class="ghost" data-broad-remove="${escapeHtml(task.key)}">Clear</button>`:''}
+      <button type="button" class="ghost" data-broad-no-flights="${escapeHtml(task.key)}" ${importing?'disabled':''}>No flights found</button></div></div>
       ${record?`<details class="broad-options"><summary>View ${record.options.length} captured flight options</summary>
         ${record.options.map(item=>`<div class="broad-option"><div><strong>${escapeHtml(item.departureClock)} → ${escapeHtml(item.arrivalClock)}${item.arrivalDayOffset?` (+${item.arrivalDayOffset}d)`:''}</strong> · ${escapeHtml(item.carrier)}${item.stops?` · ${item.stops} stop(s)`:' · Nonstop'}</div><strong>${money(item.estimatedEur)}</strong></div>`).join('')}
         <p class="helper">Indicative one-way prices · ${escapeHtml(record.capturedAt||'Capture time unknown')} · Check baggage and seller for finalists.</p></details>`:''}`;
-  }).join(''):'<p class="helper">Generate candidate routes first.</p>';
+  }).join(''):'<p class="helper">No available candidate flight searches.</p>';
+  if(excludedTasks.length){
+    $('broadSearches').insertAdjacentHTML('beforeend',excludedTasks.map(task=>
+      `<div class="broad-task"><div><strong>${escapeHtml(task.leg.from)} → ${escapeHtml(task.leg.to)} · ${escapeHtml(task.leg.date)}</strong>
+       <small>No flights found · ${task.routeCount} candidate(s) excluded · ${unavailableFlights[task.key]?.source==='google_flights_exact_search'?'explicit Google Flights search result':'checked by user'}</small></div>
+       <div><button type="button" class="secondary" data-broad-restore="${escapeHtml(task.key)}" ${importing?'disabled':''}>Retry / undo exclusion</button></div></div>`).join(''));
+  }
   const choices=tasks.map(task=>({task,matched:pendingFlightCapture?.text &&
     parseGoogleFlightsSearchResults(pendingFlightCapture.text)?.options?.some(o=>
       searchOptionMatchesLeg(o,task.leg))})).filter(row=>row.matched);
@@ -731,7 +788,7 @@ function renderBroadResearch(){
     ${r.selected.some(s=>s.cacheAge==='stale')?'<div class="helper">Some flight quotes are older than 24 hours; refresh before deciding.</div>':''}
     ${preview?`<div class="helper">${escapeHtml(preview)}</div>`:''}</div>`;
   }).join('')||'<p class="helper">No route comparisons yet.</p>';
-  $('broadSummary').textContent=!tasks.length ? 'Generate candidate routes to compare flight prices.' : pending.length ?
+  $('broadSummary').textContent=!tasks.length ? (excludedTasks.length ? 'No available flight searches remain. Undo a no-flights exclusion below or generate other route candidates.' : 'Generate candidate routes to compare flight prices.') : pending.length ?
     `Research ${pending.length} remaining one-way search(es) for a complete first-pass cost comparison.`:
     `All ${tasks.length} unique flight searches have cached results. Search quotes are preliminary; confirm finalist tickets and baggage.`;
 }
@@ -773,6 +830,22 @@ async function openAndImportResearch(task,{reuseTabId=null}={}) {
         await new Promise(resolve=>setTimeout(resolve,800));
         continue;
       }
+      if(reply?.ok && reply.unavailable){
+        // A positive no-options page must match the exact tfs/date search URL.
+        // Import failures and nearby-airport suggestions never trigger this.
+        if(reply.evidence!=='explicit_no_matching_options' ||
+          !sameExactGoogleFlightsSearch(reply.sourceUrl,expectedUrl)){
+          const message='Unverified empty-results signal; please check the exact search manually.';
+          status(message);return {ok:false,error:message,tabId:tab.id};
+        }
+        unavailableFlights[task.key]={status:'no_flights',source:'google_flights_exact_search',
+          observedAt:new Date().toISOString()};
+        delete broadCache[task.key];
+        await persist();render();
+        const eliminated=researchTasks(candidatePool()).find(item=>item.key===task.key)?.routeCount||1;
+        status(`Google Flights found no matching options for ${task.leg.from} → ${task.leg.to} on ${task.leg.date}. Excluded ${eliminated} candidate(s). Nearby-airport alternatives were ignored; use Retry / undo exclusion to reverse.`);
+        return {ok:true,unavailable:true,tabId:tab.id};
+      }
       if(reply?.ok) {
         try {
           // Do not advance on a content-script acknowledgement alone: the
@@ -808,6 +881,25 @@ async function openAndImportResearch(task,{reuseTabId=null}={}) {
   }
 }
 $('broadSearches').addEventListener('click',async event=>{
+  const mark=event.target.closest('button[data-broad-no-flights]');
+  const restore=event.target.closest('button[data-broad-restore]');
+  if(mark || restore){
+    if(broadBatchRunning || broadImportBusy || workflowRunning)return;
+    const key=mark?.dataset.broadNoFlights || restore.dataset.broadRestore;
+    const task=researchTasks(candidatePool()).find(item=>item.key===key);
+    if(!task)return;
+    if(mark){
+      if(!window.confirm(`Did you check flights from ${task.leg.from} to ${task.leg.to} on ${task.leg.date} and find NO available flights? A failed import, empty page, or missing price does not count. This excludes ${task.routeCount} candidate(s).`))return;
+      unavailableFlights[key]={status:'no_flights',confirmedAt:new Date().toISOString(),source:'user_review'};
+      delete broadCache[key];
+    }else{
+      delete unavailableFlights[key];
+    }
+    await persist();render();
+    status(mark ? `Excluded ${task.routeCount} route(s) containing ${task.leg.from} → ${task.leg.to} on ${task.leg.date}.`
+      : `Restored routes containing ${task.leg.from} → ${task.leg.to} on ${task.leg.date}. Research this flight again.`);
+    return;
+  }
   const open=event.target.closest('button[data-broad-open]');
   const clear=event.target.closest('button[data-broad-remove]');
   if(broadBatchRunning || broadImportBusy)return;
@@ -840,23 +932,24 @@ async function importAllMissingFlights({fromWorkflow=false}={}) {
     report=await runFlightImportQueue(broadTasks(),{
       isCached:task=>Boolean(broadCache[task.key]),
       shouldStop:()=>broadBatchCancelRequested,
+      shouldSkip:task=>!broadTasks().some(active=>active.key===task.key),
       importTask:(task,options)=>openAndImportResearch(task,options),
       onProgress:progress=>{
         const failures=progress.failures.length;
         if(progress.current){
           const {task,number}=progress.current;
-          const message=`Flight ${number} of ${progress.total}: ${task.leg.from} → ${task.leg.to} (${task.leg.date}). ${progress.imported} imported${failures?`, ${failures} need review`:''}.`;
+          const message=`Flight ${number} of ${progress.total}: ${task.leg.from} → ${task.leg.to} (${task.leg.date}). ${progress.imported} imported${progress.unavailable?`, ${progress.unavailable} no-options`:''}${failures?`, ${failures} need review`:''}.`;
           $('broadBatchProgress').textContent=message;
           if(fromWorkflow)$('workflowStatus').textContent=message;
         }else if(progress.completed===progress.total || progress.stopped){
-          const message=`${progress.imported} of ${progress.total} flight searches imported${failures?`; ${failures} need review`:''}${progress.stopped?' (stopped early)':''}.`;
+          const message=`${progress.imported} imported · ${progress.unavailable||0} no-options · ${progress.skipped||0} no longer needed${failures?` · ${failures} need review`:''}${progress.stopped?' (stopped early)':''}.`;
           $('broadBatchProgress').textContent=message;
           if(fromWorkflow)$('workflowStatus').textContent=message;
         }
       }
     });
     const failures=report.failures.length;
-    const summary=`${report.imported} of ${report.total} missing one-way searches imported${failures?`; ${failures} need manual review`:''}${report.stopped?' (stopped early)':''}. Saved fares were not changed.`;
+    const summary=`${report.imported} of ${report.total} missing one-way searches imported; ${report.unavailable} confirmed no-options; ${report.skipped} skipped as irrelevant${failures?`; ${failures} need manual review`:''}${report.stopped?' (stopped early)':''}. Saved fares were not changed.`;
     $('broadBatchProgress').textContent=summary;
     status(summary);
     return report;
@@ -915,7 +1008,7 @@ $('findBestRoutes').addEventListener('click',async()=>{
           ? 'Route comparisons are ready using existing cached flight estimates. Refresh older prices before booking.'
           : outcome.status==='research-failed'
             ? 'Routes are ready, but flight research could not finish. You can retry missing flights below.'
-            : `${report?.imported||0} flight search(es) imported. ${report?.failures?.length||0} need manual review${outcome.status==='stopped'?' (stopped early)':''}. Compare your options below; prices are estimates.`;
+            : `${report?.imported||0} flight search(es) imported; ${report?.unavailable||0} confirmed no-options; ${report?.skipped||0} no longer needed. ${report?.failures?.length||0} need manual review${outcome.status==='stopped'?' (stopped early)':''}. Compare your remaining options below; prices are estimates.`;
     $('workflowStatus').textContent=resultMessage+(trainReport?` Train search results: ${trainReport.success} indicative imported; ${trainReport.needsReview} need review.`:'');
     if(outcome.status!=='generation-failed')$('routeResults').scrollIntoView({behavior:'smooth',block:'start'});
   }catch(error){
@@ -1774,7 +1867,7 @@ $('export').addEventListener('click', () => {
 });
 async function init() {
   try {
-    const saved = await chrome.storage.local.get(['trainCache','trip','bag','offers','roundTripTickets','flightTimes','groundTimes','flightResearch','broadCache','pendingFlightCapture','routes','manualRoutes','destinationCandidates','destinationCandidateKey','connectionCandidates','connectionCandidateKey','parsedPlan','parseWarnings','parseSource','parsedRequest','parseDebug','sessionCleared','lastAiInterpretation','priceTestMode']);
+    const saved = await chrome.storage.local.get(['trainCache','trip','bag','offers','roundTripTickets','flightTimes','groundTimes','flightResearch','broadCache','pendingFlightCapture','routes','manualRoutes','destinationCandidates','destinationCandidateKey','connectionCandidates','connectionCandidateKey','parsedPlan','parseWarnings','parseSource','parsedRequest','parseDebug','sessionCleared','lastAiInterpretation','priceTestMode','unavailableFlights']);
     priceTestMode = saved.priceTestMode === true;
     // Upgrade from v0.2.1: restore an explicitly named country from saved request text.
     const previous = saved.trip || {};
@@ -1789,6 +1882,7 @@ async function init() {
     roundTripTickets = saved.roundTripTickets && typeof saved.roundTripTickets==='object' && !Array.isArray(saved.roundTripTickets)?saved.roundTripTickets:{};
     flightResearch = saved.flightResearch && typeof saved.flightResearch==='object' && !Array.isArray(saved.flightResearch) ? saved.flightResearch : {};
     broadCache = saved.broadCache && typeof saved.broadCache==='object' && !Array.isArray(saved.broadCache) ? saved.broadCache : {};
+    unavailableFlights = saved.unavailableFlights && typeof saved.unavailableFlights==='object' && !Array.isArray(saved.unavailableFlights) ? saved.unavailableFlights : {};
     trainCache = saved.trainCache && typeof saved.trainCache==='object' && !Array.isArray(saved.trainCache) ? saved.trainCache : {};
     pendingFlightCapture = saved.pendingFlightCapture?.text ? saved.pendingFlightCapture : null;
     flightTimes = saved.flightTimes && !Array.isArray(saved.flightTimes) && typeof saved.flightTimes === 'object' ? saved.flightTimes : {};

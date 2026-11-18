@@ -56,6 +56,12 @@ test('no silent verified fare: user confirmation is required to accept a capture
 });
 test('auto-cache requires unmodified route/date in URL, not merely a matching tab',()=>{
   assert.equal(captureMatchesTrainSearch(capture(),task),true);
+  const redirected=new URL(validUrl);
+  redirected.pathname='/search-results';
+  redirected.hostname='omio.com';
+  assert.equal(captureMatchesTrainSearch(capture({sourceUrl:redirected.toString()}),task),true);
+  redirected.searchParams.delete('departureDate');
+  assert.equal(captureMatchesTrainSearch(capture({sourceUrl:redirected.toString()}),task),false);
   const wrongDate=validUrl.replace('2027-01-11','2027-01-12');
   assert.equal(captureMatchesTrainSearch(capture({sourceUrl:wrongDate}),task),false);
   assert.equal(captureMatchesTrainSearch(capture({sourceUrl:'https://www.omio.com/app/search?route=Barcelona-Madrid'}),task),false);
